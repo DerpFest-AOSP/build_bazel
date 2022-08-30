@@ -99,18 +99,13 @@ HOST_INCOMPATIBLE_TARGETS=(
   # TODO(b/217756861): Apex toolchain is incompatible with host arches but apex modules do
   # not have this restriction
   -//build/bazel/examples/apex/...
+  -//build/bazel/ci/dist/...
+  -//build/bazel/rules/apex/...
+  -//build/bazel/tests/apex/...
   -//packages/modules/adb/apex:com.android.adbd
   -//system/timezone/apex:com.android.tzdata
-  -//build/bazel/tests/apex/...
-  -//build/bazel/ci/dist/...
 
-  # TODO(b/217927043): Determine how to address targets that are device only
-  -//system/core/libpackagelistparser:all
-  -//external/icu/libicu:all
-  //external/icu/libicu:libicu
-  -//external/icu/icu4c/source/tools/ctestfw:all
-
-  # TODO(b/217926427): determine why these host_supported modules do not build on host
+  # TODO(b/216626461): add support for host_ldlibs
   -//packages/modules/adb:all
   -//packages/modules/adb/pairing_connection:all
 )

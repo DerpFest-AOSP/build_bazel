@@ -17,11 +17,7 @@ make_injection_repository(
     name = "make_injection",
     binaries = [
         # APEX tools
-        "apex_compression_tool",
         "apexer",
-        "conv_apex_manifest",
-        "deapexer",
-        "sefcontext_compile",
     ],
     target_module_files = {
         # For APEX comparisons
@@ -32,9 +28,7 @@ make_injection_repository(
     watch_android_bp_files = [
         "//:build/bazel/examples/apex/minimal/Android.bp", # for build.bazel.examples.apex.minimal
         "//:packages/modules/adbd/apex/Android.bp", # for com.android.adbd
-        "//:system/apex/apexer/Android.bp", # for apexer, conv_apex_manifest
-        "//:system/apex/tools/apex_compression_tool", # for apex_compression_tool, deapexer
-        "//:external/selinux/libselinux/Android.bp", # for sefcontext_compile
+        "//:system/apex/apexer/Android.bp", # for apexer
     ],
 )
 

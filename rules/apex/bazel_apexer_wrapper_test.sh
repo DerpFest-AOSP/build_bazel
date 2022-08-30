@@ -19,10 +19,13 @@ set -xeuo pipefail
 
 prebuilt_tool_path="${RUNFILES_DIR}/__main__/external/make_injection/host/linux-x86/bin"
 apexer_tool_path="${RUNFILES_DIR}/__main__/external/make_injection/host/linux-x86/bin/apexer"
+conv_apex_manifest_tool_path="${RUNFILES_DIR}/__main__/system/apex/apexer/conv_apex_manifest"
+deapexer_tool_path="${RUNFILES_DIR}/__main__/system/apex/tools/deapexer"
 avb_tool_path="${RUNFILES_DIR}/__main__/external/avb"
 e2fsdroid_path="${RUNFILES_DIR}/__main__/external/e2fsprogs/contrib/android"
 mke2fs_path="${RUNFILES_DIR}/__main__/external/e2fsprogs/misc"
 resize2fs_path="${RUNFILES_DIR}/__main__/external/e2fsprogs/resize"
+sefcontext_compile_path="${RUNFILES_DIR}/__main__/external/selinux/libselinux"
 debugfs_path="${RUNFILES_DIR}/__main__/external/e2fsprogs/debugfs"
 soong_zip_path="${RUNFILES_DIR}/__main__/prebuilts/build-tools/linux-x86/bin"
 aapt2_path="${RUNFILES_DIR}/__main__/prebuilts/sdk/tools/linux/bin"
@@ -60,7 +63,7 @@ ln -s "${input_dir}/two_level_sym_in_execroot" "${input_dir}/three_level_sym_in_
 manifest_dir=$(mktemp -d)
 manifest_file="${manifest_dir}/apex_manifest.pb"
 echo '{"name": "com.android.example.apex", "version": 1}' > "${manifest_dir}/apex_manifest.json"
-"${prebuilt_tool_path}/conv_apex_manifest" proto "${manifest_dir}/apex_manifest.json" -o ${manifest_file}
+"${conv_apex_manifest_tool_path}" proto "${manifest_dir}/apex_manifest.json" -o ${manifest_file}
 
 # Create the file_contexts file
 file_contexts_file=$(mktemp)
@@ -100,7 +103,7 @@ echo "/ 0 2000 0755
 /dir7 0 2000 0755
 /dir7/three_level_sym_in_execroot 1000 1000 0644" > ${canned_fs_config}
 
-apexer_tool_paths=${prebuilt_tool_path}:${avb_tool_path}:${avb_tool_path}:${e2fsdroid_path}:${mke2fs_path}:${resize2fs_path}:${debugfs_path}:${soong_zip_path}:${aapt2_path}
+apexer_tool_paths=${prebuilt_tool_path}:${avb_tool_path}:${avb_tool_path}:${e2fsdroid_path}:${mke2fs_path}:${resize2fs_path}:${debugfs_path}:${soong_zip_path}:${aapt2_path}:${sefcontext_compile_path}
 
 #############################################
 # run bazel_apexer_wrapper
@@ -120,7 +123,7 @@ apexer_tool_paths=${prebuilt_tool_path}:${avb_tool_path}:${avb_tool_path}:${e2fs
 #############################################
 # check the result
 #############################################
-"${prebuilt_tool_path}/deapexer" --debugfs_path="${debugfs_path}/debugfs" extract ${output_file} ${output_dir}
+"${deapexer_tool_path}" --debugfs_path="${debugfs_path}/debugfs" extract ${output_file} ${output_dir}
 
 # The expected mounted tree should be something like this:
 # /tmp/tmp.9u7ViPlMr7
