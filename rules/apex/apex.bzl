@@ -167,6 +167,7 @@ def _convert_apex_manifest_json_to_pb(ctx, apex_toolchain, apex_manifest_json):
 
     return apex_manifest_pb
 
+# TODO(b/236683936): Add support for custom canned_fs_config concatenation.
 def _generate_canned_fs_config(ctx, filepaths):
     """Generate filesystem config.
 
@@ -189,32 +190,53 @@ def _generate_canned_fs_config(ctx, filepaths):
             for i in range(1, len(dirs)+1):
                 apex_subdirs_set["/".join(dirs[:i])] = True
 
+    # The order of entries is significant. Later entries are preferred over
+    # earlier entries. Keep this consistent with Soong.
     config_lines = []
-    config_lines += ["/ 0 2000 0755"]
+    config_lines += ["/ 1000 1000 0755"]
     config_lines += ["/apex_manifest.json 1000 1000 0644"]
     config_lines += ["/apex_manifest.pb 1000 1000 0644"]
 
-    for filepath in filepaths:
-        if filepath.startswith("bin/"):
-            # Mark all binaries as executable.
-            config_lines += ["/" + filepath + " 0 2000 0755"]
-        else:
-            # Everything else is read-only.
-            config_lines += ["/" + filepath + " 1000 1000 0644"]
+    filepaths = sorted(filepaths)
+
+    # Readonly if not executable.
+    config_lines += ["/" + f + " 1000 1000 0644" for f in filepaths if not f.startswith("bin/")]
+
+    # Mark all binaries as executable.
+    config_lines += ["/" + f + " 0 2000 0755" for f in filepaths if f.startswith("bin/")]
 
     # All directories have the same permission.
-    config_lines += ["/" + d + " 0 2000 0755" for d in apex_subdirs_set.keys()]
-    config_lines = sorted(config_lines)
+    config_lines += ["/" + d + " 0 2000 0755" for d in sorted(apex_subdirs_set.keys())]
 
     file = ctx.actions.declare_file(ctx.attr.name + '_canned_fs_config.txt')
-    ctx.actions.write(file, '\n'.join(config_lines))
+    ctx.actions.write(file, '\n'.join(config_lines) + '\n')
 
     return file
+
+# Append an entry for apex_manifest.pb to the file_contexts file for this APEX,
+# which is either from /system/sepolicy/apex/<apexname>-file_contexts (set in
+# the apex macro) or custom file_contexts attribute value of this APEX. This
+# ensures that the manifest file is correctly labeled as system_file.
+def _generate_file_contexts(ctx):
+    file_contexts = ctx.actions.declare_file(ctx.attr.name + "-file_contexts")
+
+    ctx.actions.run_shell(
+        inputs = [ctx.file.file_contexts],
+        outputs = [file_contexts],
+        mnemonic = "GenerateApexFileContexts",
+        command = " ".join([
+            "cat", ctx.file.file_contexts.path, ">", file_contexts.path,
+            "&&", "echo", ">>", file_contexts.path,
+            "&&", "echo", "/apex_manifest\\\\.pb u:object_r:system_file:s0", ">>", file_contexts.path,
+            "&&", "echo", "/ u:object_r:system_file:s0", ">>", file_contexts.path,
+        ]
+    ))
+
+    return file_contexts
 
 # apexer - generate the APEX file.
 def _run_apexer(ctx, apex_toolchain):
     # Inputs
-    file_contexts = ctx.file.file_contexts
     apex_key_info = ctx.attr.key[ApexKeyInfo]
     privkey = apex_key_info.private_key
     pubkey = apex_key_info.public_key
@@ -223,6 +245,7 @@ def _run_apexer(ctx, apex_toolchain):
 
     file_mapping, requires_native_libs, provides_native_libs = _create_file_mapping(ctx)
     canned_fs_config = _generate_canned_fs_config(ctx, file_mapping.values())
+    file_contexts = _generate_file_contexts(ctx)
     full_apex_manifest_json = _add_apex_manifest_information(ctx, apex_toolchain, requires_native_libs, provides_native_libs)
     apex_manifest_pb = _convert_apex_manifest_json_to_pb(ctx, apex_toolchain, full_apex_manifest_json)
 
@@ -232,10 +255,12 @@ def _run_apexer(ctx, apex_toolchain):
     # Outputs
     apex_output_file = ctx.actions.declare_file(ctx.attr.name + ".apex.unsigned")
 
+    apexer_files = apex_toolchain.apexer[DefaultInfo].files_to_run
+
     # Arguments
     args = ctx.actions.args()
     args.add(file_mapping_file.path)
-    args.add(apex_toolchain.apexer.path)
+    args.add(apexer_files.executable.path)
     if ctx.attr._apexer_verbose[BuildSettingInfo].value:
         args.add("--verbose")
     args.add('--force')
@@ -250,8 +275,11 @@ def _run_apexer(ctx, apex_toolchain):
     args.add_all(['--payload_fs_type', 'ext4'])
 
     # Override the package name, if it's expicitly specified
-    if ctx.attr.package_name != None:
+    if ctx.attr.package_name:
         args.add_all(["--override_apk_package_name", ctx.attr.package_name])
+
+    if ctx.attr.logging_parent:
+        args.add_all(["--logging_parent", ctx.attr.logging_parent])
 
     # TODO(b/215339575): This is a super rudimentary way to convert "current" to a numerical number.
     # Generalize this to API level handling logic in a separate Starlark utility, preferably using
@@ -269,11 +297,8 @@ def _run_apexer(ctx, apex_toolchain):
     resize2fs_files = apex_toolchain.resize2fs[DefaultInfo].files_to_run
     sefcontext_compile_files = apex_toolchain.sefcontext_compile[DefaultInfo].files_to_run
     apexer_tool_paths = [
-        # These are built by make_injection
-        apex_toolchain.apexer.dirname,
-
-        # These are real Bazel targets
         apex_toolchain.aapt2.dirname,
+        apexer_files.executable.dirname,
         avbtool_files.executable.dirname,
         e2fsdroid_files.executable.dirname,
         mke2fs_files.executable.dirname,
@@ -303,13 +328,13 @@ def _run_apexer(ctx, apex_toolchain):
         inputs.append(android_manifest)
 
     tools = [
+        apexer_files,
         avbtool_files,
         e2fsdroid_files,
         mke2fs_files,
         resize2fs_files,
         sefcontext_compile_files,
         apex_toolchain.aapt2,
-        apex_toolchain.apexer,
     ]
 
     ctx.actions.run(
@@ -415,6 +440,7 @@ _apex = rule(
         "manifest": attr.label(allow_single_file = [".json"]),
         "android_manifest": attr.label(allow_single_file = [".xml"]),
         "package_name": attr.string(),
+        "logging_parent": attr.string(),
         "file_contexts": attr.label(allow_single_file = True, mandatory = True),
         "key": attr.label(providers = [ApexKeyInfo], mandatory = True),
         "certificate": attr.label(providers = [AndroidAppCertificateInfo], mandatory = True),
@@ -498,6 +524,7 @@ def apex(
         binaries = [],
         prebuilts = [],
         package_name = None,
+        logging_parent = None,
         **kwargs):
     "Bazel macro to correspond with the APEX bundle Soong module."
 
@@ -526,6 +553,8 @@ def apex(
         native_shared_libs_64 = native_shared_libs_64,
         binaries = binaries,
         prebuilts = prebuilts,
+        package_name = package_name,
+        logging_parent = logging_parent,
 
         # Enables predeclared output builds from command line directly, e.g.
         #
@@ -533,6 +562,5 @@ def apex(
         # $ bazel build //path/to/module:com.android.module.capex
         apex_output = apex_output,
         capex_output = capex_output,
-        package_name = package_name,
         **kwargs
     )
