@@ -1,45 +1,49 @@
-load("//build/bazel/rules:soong_injection.bzl", "soong_injection_repository")
-load("//build/bazel/rules:make_injection.bzl", "make_injection_repository")
-
-register_toolchains(
-    "//prebuilts/build-tools:py_toolchain",
-    "//prebuilts/clang/host/linux-x86:all",
-)
-
 # This repository provides files that Soong emits during bp2build (other than
 # converted BUILD files), mostly .bzl files containing constants to support the
 # converted BUILD files.
+load("//build/bazel/rules:soong_injection.bzl", "soong_injection_repository")
 soong_injection_repository(name="soong_injection")
 
-# This is a repository rule to allow Bazel builds to depend on Soong-built
-# prebuilts for migration purposes.
+# ! WARNING ! WARNING ! WARNING !
+# make_injection is a repository rule to allow Bazel builds to depend on
+# Soong-built prebuilts for experimental purposes. It is fragile, slow, and
+# works for very limited use cases. Do not add a dependency that will cause
+# make_injection to run for any prod builds or tests.
+#
+# If you need to add something in this list, please contact the Roboleaf
+# team and ask jingwen@ for a review.
+load("//build/bazel/rules:make_injection.bzl", "make_injection_repository")
 make_injection_repository(
     name = "make_injection",
     binaries = [
-        # APEX tools
-        "apexer",
+        "build_image",
+        "mkuserimg_mke2fs",
     ],
-    target_module_files = {
-        # For APEX comparisons
-        "com.android.tzdata": ["system/apex/com.android.tzdata.apex"],
-        "com.android.adbd": ["system/apex/com.android.adbd.capex"],
-        "build.bazel.examples.apex.minimal": ["system/product/apex/build.bazel.examples.apex.minimal.apex"],
-    },
+    target_module_files = {},
     watch_android_bp_files = [
-        "//:build/bazel/examples/apex/minimal/Android.bp", # for build.bazel.examples.apex.minimal
-        "//:packages/modules/adbd/apex/Android.bp", # for com.android.adbd
-        "//:system/apex/apexer/Android.bp", # for apexer
+        "//:build/make/tools/releasetools/Android.bp", # for build_image
+        "//:system/extras/ext4_utils/Android.bp", # for mkuserimg_mke2fs
     ],
 )
+# ! WARNING ! WARNING ! WARNING !
 
-local_repository(
-    name = "rules_cc",
-    path = "build/bazel/rules_cc",
+# ! WARNING ! WARNING ! WARNING !
+# This is an experimental product configuration repostory rule.
+# It currently has incrementality issues, and will not rebuild
+# when the product config is changed. Use @soong_injection//product_config
+# instead. b/237004497 tracks fixing this issue and consolidating
+# it with soong_injection.
+load("//build/bazel/product_config:product_config_repository_rule.bzl", "product_config")
+product_config(
+    name = "product_config",
 )
+# ! WARNING ! WARNING ! WARNING !
 
-local_repository(
-    name = "bazel_skylib",
-    path = "external/bazel-skylib",
+load("//build/bazel_common_rules/workspace:external.bzl", "import_external_repositories")
+
+import_external_repositories(
+    bazel_skylib = True,
+    io_abseil_py = True,
 )
 
 load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
@@ -47,11 +51,19 @@ load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
 bazel_skylib_workspace()
 
 local_repository(
+    name = "rules_cc",
+    path = "build/bazel/rules_cc",
+)
+
+local_repository(
     name = "rules_android",
     path = "external/bazelbuild-rules_android",
 )
 
 register_toolchains(
+  "//prebuilts/build-tools:py_toolchain",
+  "//prebuilts/clang/host/linux-x86:all",
+
   # For Starlark Android rules
   "//prebuilts/sdk:android_default_toolchain",
   "//prebuilts/sdk:android_sdk_tools",
@@ -61,6 +73,9 @@ register_toolchains(
 
   # For APEX rules
   "//build/bazel/rules/apex:all",
+
+  # For partition rules
+  "//build/bazel/rules/partitions:all"
 )
 
 bind(

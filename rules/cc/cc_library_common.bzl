@@ -15,7 +15,6 @@ limitations under the License.
 """
 
 load("//build/bazel/product_variables:constants.bzl", "constants")
-load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cpp_toolchain")
 load("@soong_injection//api_levels:api_levels.bzl", "api_levels")
 load("@soong_injection//product_config:product_variables.bzl", "product_vars")
 
@@ -78,14 +77,14 @@ def get_includes_paths(ctx, dirs, package_relative = True):
 
 def create_ccinfo_for_includes(
         ctx,
+        hdrs = [],
         includes = [],
         absolute_includes = [],
         system_includes = [],
         deps = []):
-    cc_toolchain = find_cpp_toolchain(ctx)
-
     # Create a compilation context using the string includes of this target.
     compilation_context = cc_common.create_compilation_context(
+        headers = depset(hdrs),
         includes = depset(
             get_includes_paths(ctx, includes) +
             get_includes_paths(ctx, absolute_includes, package_relative = False),

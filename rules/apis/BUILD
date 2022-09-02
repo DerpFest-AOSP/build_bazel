@@ -13,8 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-load(":flex_test.bzl", "flex_test_suite")
-load(":cc_binary_test.bzl", "cc_binary_test_suite")
+load(":cc_api_contribution_test.bzl", "cc_api_test_suite")
+load(":api_domain_contribution_test.bzl", "api_domain_contribution_test_suite")
 
-flex_test_suite(name = "flex_tests")
-cc_binary_test_suite(name = "cc_binary_tests")
+cc_api_test_suite(name = "cc_api_test_suite")
+
+api_domain_contribution_test_suite(name = "api_domain_contribution_test_suite")

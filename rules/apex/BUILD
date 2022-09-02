@@ -15,12 +15,6 @@ config_setting(
     },
 )
 
-string_setting(
-    name = "min_sdk_version",
-    build_setting_default = "",
-    visibility = ["//visibility:public"],
-)
-
 string_list_setting(
     name = "apex_direct_deps",
     build_setting_default = [],
@@ -39,7 +33,7 @@ apex_toolchain(
     name = "apex_toolchain",
     aapt2 = "//prebuilts/sdk/tools:linux/bin/aapt2",
     avbtool = "//external/avb:avbtool",
-    apexer = "@make_injection//:host/linux-x86/bin/apexer",
+    apexer = "//system/apex/apexer",
     mke2fs = "//external/e2fsprogs/misc:mke2fs",
     resize2fs = "//external/e2fsprogs/resize:resize2fs",
     e2fsdroid = "//external/e2fsprogs/contrib/android:e2fsdroid",
@@ -62,40 +56,6 @@ toolchain(
     ],
     toolchain = ":apex_toolchain",
     toolchain_type = "//build/bazel/rules/apex:apex_toolchain_type",
-)
-
-py_binary(
-    name = "bazel_apexer_wrapper",
-    srcs = ["bazel_apexer_wrapper.py"],
-    visibility = ["//visibility:public"],
-)
-
-sh_test(
-    name = "bazel_apexer_wrapper_test",
-    srcs = ["bazel_apexer_wrapper_test.sh"],
-    deps = ["@bazel_tools//tools/bash/runfiles"],
-    data = [
-        ":bazel_apexer_wrapper",
-        "test.pem",
-        "//external/avb:avbtool",
-        "//external/e2fsprogs/contrib/android:e2fsdroid",
-        "//external/e2fsprogs/misc:mke2fs",
-        "//external/e2fsprogs/resize:resize2fs",
-        "//external/e2fsprogs/debugfs:debugfs",
-        "//external/selinux/libselinux:sefcontext_compile",
-        "//prebuilts/build-tools:linux-x86/bin/soong_zip",
-        "//prebuilts/sdk/current:public/android.jar",
-        "//prebuilts/sdk/tools:linux/bin/aapt2",
-        "//system/apex/apexer:conv_apex_manifest",
-        "//system/apex/tools:apex_compression_tool",
-        "//system/apex/tools:deapexer",
-        "@make_injection//:host/linux-x86/bin/apexer",
-    ],
-    # This is a host test.
-    target_compatible_with = select({
-        "//build/bazel/platforms/os:linux": [],
-        "//conditions:default": ["@platforms//:incompatible"],
-    }),
 )
 
 apex_test_suite(
