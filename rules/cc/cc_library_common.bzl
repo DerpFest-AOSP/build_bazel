@@ -21,17 +21,28 @@ load("@soong_injection//product_config:product_variables.bzl", "product_vars")
 _bionic_targets = ["//bionic/libc", "//bionic/libdl", "//bionic/libm"]
 _static_bionic_targets = ["//bionic/libc:libc_bp2build_cc_library_static", "//bionic/libdl:libdl_bp2build_cc_library_static", "//bionic/libm:libm_bp2build_cc_library_static"]
 
+# When building a APEX, stub libraries of libc, libdl, libm should be used in linking.
+_bionic_stub_targets = [
+    "//bionic/libc:libc_stub_libs_current",
+    "//bionic/libdl:libdl_stub_libs_current",
+    "//bionic/libm:libm_stub_libs_current",
+]
+
 # The default system_dynamic_deps value for cc libraries. This value should be
 # used if no value for system_dynamic_deps is specified.
 system_dynamic_deps_defaults = select({
-    constants.ArchVariantToConstraints["linux_bionic"]: _bionic_targets,
-    constants.ArchVariantToConstraints["android"]: _bionic_targets,
+    "//build/bazel/rules/apex:android-in_apex": _bionic_stub_targets,
+    "//build/bazel/rules/apex:android-non_apex": _bionic_targets,
+    "//build/bazel/rules/apex:linux_bionic-in_apex": _bionic_stub_targets,
+    "//build/bazel/rules/apex:linux_bionic-non_apex": _bionic_targets,
     "//conditions:default": [],
 })
 
 system_static_deps_defaults = select({
-    constants.ArchVariantToConstraints["linux_bionic"]: _static_bionic_targets,
-    constants.ArchVariantToConstraints["android"]: _static_bionic_targets,
+    "//build/bazel/rules/apex:android-in_apex": _bionic_stub_targets,
+    "//build/bazel/rules/apex:android-non_apex": _static_bionic_targets,
+    "//build/bazel/rules/apex:linux_bionic-in_apex": _bionic_stub_targets,
+    "//build/bazel/rules/apex:linux_bionic-non_apex": _static_bionic_targets,
     "//conditions:default": [],
 })
 
@@ -110,14 +121,14 @@ def is_external_directory(package_name):
             return True
         secondary_path = paths[1]
         if secondary_path in ["google", "interfaces", "ril"]:
-            return True
-        return secondary_path.startswith("libhardware")
+            return False
+        return not secondary_path.startswith("libhardware")
     if package_name.startswith("vendor"):
         paths = package_name.split("/")
         if len(paths) < 2:
             return True
         secondary_path = paths[1]
-        return secondary_path.contains("google")
+        return "google" not in secondary_path
     return False
 
 # TODO: Move this to a common rule dir, instead of a cc rule dir. Nothing here
