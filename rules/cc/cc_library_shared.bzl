@@ -24,14 +24,12 @@ load(
 load(":cc_library_static.bzl", "cc_library_static")
 load(":cc_stub_library.bzl", "CcStubInfo", "cc_stub_gen")
 load(":generate_toc.bzl", "shared_library_toc", _CcTocInfo = "CcTocInfo")
-load(":stl.bzl", "shared_stl_deps")
+load(":stl.bzl", "stl_deps")
 load(":stripped_cc_common.bzl", "stripped_shared_library")
 load(":versioned_cc_common.bzl", "versioned_shared_library")
-load("@rules_cc//examples:experimental_cc_shared_library.bzl", "cc_shared_library", _CcSharedLibraryInfo = "CcSharedLibraryInfo")
-load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cpp_toolchain")
+load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
 
 CcTocInfo = _CcTocInfo
-CcSharedLibraryInfo = _CcSharedLibraryInfo
 
 def cc_library_shared(
         name,
@@ -79,6 +77,7 @@ def cc_library_shared(
         inject_bssl_hash = False,
         sdk_version = "",
         min_sdk_version = "",
+        tags = [],
         **kwargs):
     "Bazel macro to correspond with the cc_library_shared Soong module."
 
@@ -101,6 +100,8 @@ def cc_library_shared(
             "-sdk_version_default",
         ]
 
+    stl = stl_deps(stl, True)
+
     # The static library at the root of the shared library.
     # This may be distinct from the static version of the library if e.g.
     # the static-variant srcs are different than the shared-variant srcs.
@@ -120,20 +121,19 @@ def cc_library_shared(
         local_includes = local_includes,
         absolute_includes = absolute_includes,
         rtti = rtti,
-        stl = stl,
+        stl = "none",
         cpp_std = cpp_std,
         c_std = c_std,
         dynamic_deps = dynamic_deps,
-        implementation_deps = implementation_deps,
-        implementation_dynamic_deps = implementation_dynamic_deps,
+        implementation_deps = implementation_deps + stl.static,
+        implementation_dynamic_deps = implementation_dynamic_deps + stl.shared,
         system_dynamic_deps = system_dynamic_deps,
         deps = deps + whole_archive_deps,
         features = features,
         use_version_lib = use_version_lib,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
-
-    stl_static, stl_shared = shared_stl_deps(stl)
 
     # implementation_deps and deps are to be linked into the shared library via
     # --no-whole-archive. In order to do so, they need to be dependencies of
@@ -144,27 +144,29 @@ def cc_library_shared(
     deps_stub = name + "_deps"
     native.cc_library(
         name = imp_deps_stub,
-        deps = implementation_deps + stl_static,
+        interface_deps = implementation_deps + stl.static + implementation_dynamic_deps + system_dynamic_deps + stl.shared,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
     native.cc_library(
         name = deps_stub,
-        deps = deps,
+        interface_deps = deps + dynamic_deps,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
 
     shared_dynamic_deps = add_lists_defaulting_to_none(
         dynamic_deps,
         system_dynamic_deps,
         implementation_dynamic_deps,
-        stl_shared,
+        stl.shared,
     )
 
     if len(soname) == 0:
         soname = name + ".so"
     soname_flag = "-Wl,-soname," + soname
 
-    cc_shared_library(
+    native.cc_shared_library(
         name = unstripped_name,
         user_link_flags = linkopts + [soname_flag],
         # b/184806113: Note this is  a workaround so users don't have to
@@ -177,6 +179,7 @@ def cc_library_shared(
         roots = [shared_root_name, imp_deps_stub, deps_stub] + whole_archive_deps,
         features = features,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
         **kwargs
     )
 
@@ -185,6 +188,7 @@ def cc_library_shared(
         name = hashed_name,
         src = unstripped_name,
         inject_bssl_hash = inject_bssl_hash,
+        tags = ["manual"],
     )
 
     versioned_name = name + "_versioned"
@@ -192,12 +196,14 @@ def cc_library_shared(
         name = versioned_name,
         src = hashed_name,
         stamp_build_number = use_version_lib,
+        tags = ["manual"],
     )
 
     stripped_shared_library(
         name = stripped_name,
         src = versioned_name,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
         **strip
     )
 
@@ -205,6 +211,7 @@ def cc_library_shared(
         name = toc_name,
         src = stripped_name,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
 
     # Emit the stub version of this library (e.g. for libraries that are
@@ -226,8 +233,13 @@ def cc_library_shared(
                 version = version,
                 target_compatible_with = target_compatible_with,
                 features = features,
+                tags = ["manual"],
             )
             stub_shared_libraries.append(stubs_library_name)
+    elif stubs_symbol_file or len(stubs_versions) > 0:
+        # TODO: add support for header_abi_checker.symbol_file and llndk symbol_file
+        # https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/library.go;l=1991-1996;drc=bbe77d66e7bee8bd1f0bc7e5492b5376b0207ef6
+        fail("stubs_symbol_file and stubs_versions must be defined together.")
 
     _cc_library_shared_proxy(
         name = name,
@@ -237,13 +249,14 @@ def cc_library_shared(
         output_file = soname,
         target_compatible_with = target_compatible_with,
         stub_shared_libraries = stub_shared_libraries,
+        tags = tags,
     )
 
 # cc_stub_library_shared creates a cc_library_shared target, but using stub C source files generated
 # from a library's .map.txt files and ndkstubgen. The top level target returns the same
 # providers as a cc_library_shared, with the addition of a CcStubInfo
 # containing metadata files and versions of the stub library.
-def cc_stub_library_shared(name, stubs_symbol_file, version, target_compatible_with, features):
+def cc_stub_library_shared(name, stubs_symbol_file, version, target_compatible_with, features, tags):
     # Call ndkstubgen to generate the stub.c source file from a .map.txt file. These
     # are accessible in the CcStubInfo provider of this target.
     cc_stub_gen(
@@ -251,39 +264,42 @@ def cc_stub_library_shared(name, stubs_symbol_file, version, target_compatible_w
         symbol_file = stubs_symbol_file,
         version = version,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
 
     # The static library at the root of the stub shared library.
     cc_library_static(
         name = name + "_root",
         srcs_c = [name + "_files"],  # compile the stub.c file
-        features = disable_crt_link(features) + \
-            [
-                # Enable the stub library compile flags
-                "stub_library",
-                # Disable all include-related features to avoid including any headers
-                # that may cause conflicting type errors with the symbols in the
-                # generated stubs source code.
-                #  e.g.
-                #  double acos(double); // in header
-                #  void acos() {} // in the generated source code
-                # See https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/library.go;l=942-946;drc=d8a72d7dc91b2122b7b10b47b80cf2f7c65f9049
-                "-toolchain_include_directories",
-                "-includes",
-                "-include_paths",
-            ],
+        features = disable_crt_link(features) +
+                   [
+                       # Enable the stub library compile flags
+                       "stub_library",
+                       # Disable all include-related features to avoid including any headers
+                       # that may cause conflicting type errors with the symbols in the
+                       # generated stubs source code.
+                       #  e.g.
+                       #  double acos(double); // in header
+                       #  void acos() {} // in the generated source code
+                       # See https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/library.go;l=942-946;drc=d8a72d7dc91b2122b7b10b47b80cf2f7c65f9049
+                       "-toolchain_include_directories",
+                       "-includes",
+                       "-include_paths",
+                   ],
         target_compatible_with = target_compatible_with,
         stl = "none",
         system_dynamic_deps = [],
+        tags = ["manual"],
     )
 
     # Create a .so for the stub library. This library is self contained, has
     # no deps, and doesn't link against crt.
-    cc_shared_library(
+    native.cc_shared_library(
         name = name + "_so",
         roots = [name + "_root"],
         features = disable_crt_link(features),
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
 
     # Create a target with CcSharedLibraryInfo and CcStubInfo providers.
@@ -291,6 +307,7 @@ def cc_stub_library_shared(name, stubs_symbol_file, version, target_compatible_w
         name = name,
         stub_target = name + "_files",
         library_target = name + "_so",
+        tags = tags,
     )
 
 def _cc_stub_library_shared_impl(ctx):
@@ -376,9 +393,12 @@ def _cc_library_shared_proxy_impl(ctx):
         ),
         _swap_shared_linker_input(ctx, ctx.attr.shared[CcSharedLibraryInfo], ctx.outputs.output_file),
         ctx.attr.table_of_contents[CcTocInfo],
-        # Propagate only includes from the root. Do not re-propagate linker inputs.
-        CcInfo(compilation_context = ctx.attr.root[CcInfo].compilation_context),
+        # The _only_ linker_input is the statically linked root itself. We need to propagate this
+        # as cc_shared_library identifies which libraries can be linked dynamically based on the
+        # linker_inputs of the roots
+        ctx.attr.root[CcInfo],
         CcStubLibrariesInfo(infos = stub_library_infos),
+        ctx.attr.shared[OutputGroupInfo],
     ]
 
 _cc_library_shared_proxy = rule(
@@ -407,7 +427,6 @@ def _bssl_hash_injection_impl(ctx):
     if ctx.attr.inject_bssl_hash:
         hashed_file = ctx.actions.declare_file("lib" + ctx.attr.name + ".so")
         args = ctx.actions.args()
-        args.add_all(["-sha256"])
         args.add_all(["-in-object", ctx.files.src[0]])
         args.add_all(["-o", hashed_file])
 
@@ -423,6 +442,7 @@ def _bssl_hash_injection_impl(ctx):
     return [
         DefaultInfo(files = depset([hashed_file])),
         ctx.attr.src[CcSharedLibraryInfo],
+        ctx.attr.src[OutputGroupInfo],
     ]
 
 _bssl_hash_injection = rule(

@@ -21,10 +21,9 @@ load(
     "parse_sdk_version",
     "system_dynamic_deps_defaults",
 )
-load(":stl.bzl", "static_stl_deps")
+load(":stl.bzl", "stl_deps")
 load("@bazel_skylib//lib:collections.bzl", "collections")
-load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cpp_toolchain")
-load("@rules_cc//examples:experimental_cc_shared_library.bzl", "CcSharedLibraryInfo")
+load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
 load("//build/bazel/product_variables:constants.bzl", "constants")
 
 CcStaticLibraryInfo = provider(fields = ["root_static_archive", "objects"])
@@ -68,7 +67,8 @@ def cc_library_static(
         data = [],
         sdk_version = "",
         min_sdk_version = "",
-        use_version_lib = False):
+        use_version_lib = False,
+        tags = []):
     "Bazel macro to correspond with the cc_library_static Soong module."
 
     exports_name = "%s_exports" % name
@@ -84,6 +84,11 @@ def cc_library_static(
         toolchain_features += [
             "-non_external_compiler_flags",
             "external_compiler_flags",
+        ]
+    else:
+        toolchain_features += [
+            "non_external_compiler_flags",
+            "-external_compiler_flags",
         ]
 
     if use_version_lib:
@@ -116,14 +121,18 @@ def cc_library_static(
         # whole archive deps always re-export their includes, etc
         deps = deps + whole_archive_deps + dynamic_deps,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
+
+    stl = stl_deps(stl, False)
 
     _cc_includes(
         name = locals_name,
         includes = local_includes,
         absolute_includes = absolute_includes,
-        deps = implementation_deps + implementation_dynamic_deps + system_dynamic_deps + static_stl_deps(stl) + implementation_whole_archive_deps,
+        deps = implementation_deps + implementation_dynamic_deps + system_dynamic_deps + stl.static + stl.shared + implementation_whole_archive_deps,
         target_compatible_with = target_compatible_with,
+        tags = ["manual"],
     )
 
     # Silently drop these attributes for now:
@@ -135,8 +144,8 @@ def cc_library_static(
             ("hdrs", hdrs),
             # Add dynamic_deps to implementation_deps, as the include paths from the
             # dynamic_deps are also needed.
-            ("implementation_deps", [locals_name]),
-            ("deps", [exports_name]),
+            ("deps", [locals_name]),
+            ("interface_deps", [exports_name]),
             ("features", toolchain_features),
             ("toolchains", ["//build/bazel/platforms:android_target_product_vars"]),
             ("alwayslink", alwayslink),
@@ -144,22 +153,35 @@ def cc_library_static(
         ],
     )
 
+    # TODO(b/231574899): restructure this to handle other images
+    copts += select({
+        "//build/bazel/rules/apex:non_apex": [],
+        "//conditions:default": [
+            "-D__ANDROID_APEX__",
+            # TODO(b/231322772): sdk_version/min_sdk_version if not finalized
+            "-D__ANDROID_APEX_MIN_SDK_VERSION__=10000",
+        ],
+    })
+
     native.cc_library(
         name = cpp_name,
         srcs = srcs,
         copts = copts + cppflags,
+        tags = ["manual"],
         **common_attrs
     )
     native.cc_library(
         name = c_name,
         srcs = srcs_c,
         copts = copts + conlyflags,
+        tags = ["manual"],
         **common_attrs
     )
     native.cc_library(
         name = asm_name,
         srcs = srcs_as,
         copts = asflags,
+        tags = ["manual"],
         **common_attrs
     )
 
@@ -168,6 +190,7 @@ def cc_library_static(
         name = name,
         deps = [cpp_name, c_name, asm_name] + whole_archive_deps + implementation_whole_archive_deps,
         target_compatible_with = target_compatible_with,
+        tags = tags,
     )
 
 # Returns a CcInfo object which combines one or more CcInfo objects, except that all

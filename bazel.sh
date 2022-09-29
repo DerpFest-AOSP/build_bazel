@@ -53,6 +53,8 @@ if [ ! "$TOP" ]; then
     exit 1
 fi
 
+ABSOLUTE_OUT_DIR="$(getoutdir)"
+
 case $(uname -s) in
     Darwin)
         ANDROID_BAZEL_PATH="${TOP}/prebuilts/bazel/darwin-x86_64/bazel"
@@ -74,13 +76,17 @@ case $(uname -s) in
         #   If one runs Bazel without soong_ui, then this  directory wouldn't
         #   exist, making standalone Bazel execution's PATH variable stricter than
         #   Bazel execution within soong_ui.
-        RESTRICTED_PATH="${TOP}/prebuilts/build-tools/path/darwin-x86:${TOP}/out/.path"
+        RESTRICTED_PATH="${TOP}/prebuilts/build-tools/path/darwin-x86:${ABSOLUTE_OUT_DIR}/.path"
         ;;
     Linux)
         ANDROID_BAZEL_PATH="${TOP}/prebuilts/bazel/linux-x86_64/bazel"
         ANDROID_BAZELRC_NAME="linux.bazelrc"
         ANDROID_BAZEL_JDK_PATH="${TOP}/prebuilts/jdk/jdk11/linux-x86"
-        RESTRICTED_PATH="${TOP}/prebuilts/build-tools/path/linux-x86:${TOP}/out/.path"
+        RESTRICTED_PATH="${TOP}/prebuilts/build-tools/path/linux-x86:${ABSOLUTE_OUT_DIR}/.path"
+
+        # Used for --sandbox_tmpfs_path. Bazel doesn't create this
+        # directory automatically. See linux.bazelrc for more information.
+        mkdir -p /tmp/bazel/sandbox
         ;;
     *)
         >&2 echo "Bazel is supported on Linux and Darwin only. Your OS is not supported for Bazel usage, based on 'uname -s': $(uname -s)"
@@ -123,10 +129,21 @@ build --action_env=PATH=${RESTRICTED_PATH}
 EOF
 }
 
+# Return 1 if STANDALONE_BAZEL is truthy
+function is_standalone_bazel() {
+    [[ ${STANDALONE_BAZEL} =~ ^(true|TRUE|1)$ ]]
+}
+
 case "x${ANDROID_BAZELRC_PATH}" in
     x)
-        # Path not provided, use default.
+      # Path not provided, use default.
+      if is_standalone_bazel; then
+        # Standalone bazel uses the empty /dev/null bazelrc
+        # This is necessary since some configs in common.bazelrc depend on soong_injection
+        ANDROID_BAZELRC_PATH=/dev/null
+      else
         ANDROID_BAZELRC_PATH="${TOP}/build/bazel"
+      fi
         ;;
     x/*)
         # Absolute path, take it as-is.
@@ -151,7 +168,7 @@ else
     exit 1
 fi
 
-if [ -n "$ANDROID_BAZELRC_PATH" -a -f "$ANDROID_BAZELRC_PATH" ]; then
+if [ "$ANDROID_BAZELRC_PATH" == "/dev/null" ] || [ -n "$ANDROID_BAZELRC_PATH" -a -f "$ANDROID_BAZELRC_PATH" ]; then
     export ANDROID_BAZELRC_PATH
 else
     >&2 echo "Couldn't locate bazelrc file for Bazel"
@@ -165,13 +182,11 @@ else
     exit 1
 fi
 
-ABSOLUTE_OUT_DIR="$(getoutdir)"
-
 # In order to be able to load JNI libraries, this directory needs to exist
 mkdir -p "${ABSOLUTE_OUT_DIR}/bazel/javatmp"
 
 ADDITIONAL_FLAGS=()
-if  [[ "${STANDALONE_BAZEL}" =~ ^(true|TRUE|1)$ ]]; then
+if  is_standalone_bazel; then
     # STANDALONE_BAZEL is set.
     >&2 echo "WARNING: Using Bazel in standalone mode. This mode is not integrated with Soong and Make, and is not supported"
     >&2 echo "for Android Platform builds. Use this mode at your own risk."

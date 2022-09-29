@@ -57,6 +57,7 @@ BUILD_TARGETS_LIST=(
   //libnativehelper/...
   //packages/...
   //prebuilts/clang/host/linux-x86:all
+  //prebuilts/build-tools/tests/...
   //system/...
   //tools/apksig/...
   //tools/platform-compat/...
@@ -71,7 +72,7 @@ BUILD_TARGETS="${BUILD_TARGETS_LIST[@]}"
 
 TEST_TARGETS_LIST=(
   //build/bazel/tests/...
-  //build/bazel/rules/apex/...
+  //build/bazel/rules/...
   //build/bazel/scripts/...
 )
 TEST_TARGETS="${TEST_TARGETS_LIST[@]}"
@@ -98,18 +99,15 @@ HOST_INCOMPATIBLE_TARGETS=(
   # TODO(b/217756861): Apex toolchain is incompatible with host arches but apex modules do
   # not have this restriction
   -//build/bazel/examples/apex/...
+  -//build/bazel/examples/partitions/...
+  -//build/bazel/ci/dist/...
+  -//build/bazel/rules/apex/...
+  -//build/bazel/tests/apex/...
+  -//build/bazel/tests/partitions/...
   -//packages/modules/adb/apex:com.android.adbd
   -//system/timezone/apex:com.android.tzdata
-  -//build/bazel/tests/apex/...
-  -//build/bazel/ci/dist/...
 
-  # TODO(b/217927043): Determine how to address targets that are device only
-  -//system/core/libpackagelistparser:all
-  -//external/icu/libicu:all
-  //external/icu/libicu:libicu
-  -//external/icu/icu4c/source/tools/ctestfw:all
-
-  # TODO(b/217926427): determine why these host_supported modules do not build on host
+  # TODO(b/216626461): add support for host_ldlibs
   -//packages/modules/adb:all
   -//packages/modules/adb/pairing_connection:all
 )
@@ -128,14 +126,14 @@ BP2BUILD_PROGRESS_MODULES=(
   com.android.neuralnetworks
   com.android.media.swcodec
 )
-bp2build_progress_script="${AOSP_ROOT}/build/bazel/scripts/bp2build-progress/bp2build-progress.py"
+bp2build_progress_script="//build/bazel/scripts/bp2build-progress:bp2build-progress"
 bp2build_progress_output_dir="${DIST_DIR}/bp2build-progress"
 mkdir -p "${bp2build_progress_output_dir}"
 
 report_args=""
 for m in "${BP2BUILD_PROGRESS_MODULES[@]}"; do
   report_args="$report_args -m ""${m}"
-  "${bp2build_progress_script}" graph  -m "${m}" --use_queryview=true > "${bp2build_progress_output_dir}/${m}_graph.dot"
+  tools/bazel run --config=bp2build --config=linux_x86_64 "${bp2build_progress_script}" -- graph  -m "${m}" --use-queryview > "${bp2build_progress_output_dir}/${m}_graph.dot"
 done
 
-"${bp2build_progress_script}" report ${report_args} --use_queryview=true > "${bp2build_progress_output_dir}/progress_report.txt"
+tools/bazel run --config=bp2build --config=linux_x86_64 "${bp2build_progress_script}" -- report ${report_args} --use-queryview > "${bp2build_progress_output_dir}/progress_report.txt"
