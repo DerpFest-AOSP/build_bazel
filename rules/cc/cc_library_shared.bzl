@@ -32,6 +32,7 @@ CcTocInfo = _CcTocInfo
 
 def cc_library_shared(
         name,
+        suffix = "",
         # Common arguments between shared_root and the shared library
         features = [],
         dynamic_deps = [],
@@ -67,7 +68,6 @@ def cc_library_shared(
 
         # Purely _shared arguments
         strip = {},
-        soname = "",
 
         # TODO(b/202299295): Handle data attribute.
         data = [],
@@ -80,7 +80,10 @@ def cc_library_shared(
         **kwargs):
     "Bazel macro to correspond with the cc_library_shared Soong module."
 
-    shared_root_name = name + "_root"
+    # There exist modules named 'libtest_missing_symbol' and
+    # 'libtest_missing_symbol_root'. Ensure that that the target suffixes are
+    # sufficiently unique.
+    shared_root_name = name + "__internal_root"
     unstripped_name = name + "_unstripped"
     stripped_name = name + "_stripped"
     toc_name = name + "_toc"
@@ -143,13 +146,13 @@ def cc_library_shared(
     deps_stub = name + "_deps"
     native.cc_library(
         name = imp_deps_stub,
-        interface_deps = implementation_deps + stl.static + implementation_dynamic_deps + system_dynamic_deps + stl.shared,
+        deps = implementation_deps + stl.static + implementation_dynamic_deps + system_dynamic_deps + stl.shared,
         target_compatible_with = target_compatible_with,
         tags = ["manual"],
     )
     native.cc_library(
         name = deps_stub,
-        interface_deps = deps + dynamic_deps,
+        deps = deps + dynamic_deps,
         target_compatible_with = target_compatible_with,
         tags = ["manual"],
     )
@@ -161,8 +164,7 @@ def cc_library_shared(
         stl.shared,
     )
 
-    if len(soname) == 0:
-        soname = name + ".so"
+    soname = name + suffix + ".so"
     soname_flag = "-Wl,-soname," + soname
 
     native.cc_shared_library(
