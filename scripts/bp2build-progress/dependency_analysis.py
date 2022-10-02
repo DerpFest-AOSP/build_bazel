@@ -48,6 +48,8 @@ IGNORED_KINDS = set([
     "license",
     "cc_defaults",
     "java_defaults",
+    "hidl_interface.go_android/soong/hidl.hidlGenFactory__loadHookModule",  # implementation detail of hidl_interface
+    "hidl_package_root",  # not being converted, contents converted as part of hidl_interface
 ])
 
 # queryview doesn't have information on the type of deps, so we explicitly skip
@@ -61,8 +63,6 @@ _QUERYVIEW_IGNORE_KINDS = set([
     "cc_prebuilt_library_static",
     "cc_prebuilt_library_static",
     "cc_prebuilt_object",
-    "hidl_interface.go_android/soong/hidl.hidlGenFactory__loadHookModule", # implementation detail of hidl_interface
-    "hidl_package_root", # not being converted, contents converted as part of hidl_interface
     "java_import",
     "java_import_host",
     "java_sdk_library_import",
@@ -122,19 +122,12 @@ ParseError: {err}""")
 def get_json_module_info(module, banchan_mode=False):
   """Returns the list of transitive dependencies of input module as provided by Soong's json module graph."""
   _build_with_soong("json-module-graph", banchan_mode)
-  # Run query.sh on the module graph for the top level module
-  jq_json = subprocess.check_output(
-      [
-          "build/bazel/json_module_graph/query.sh", "fullTransitiveDeps",
-          "out/soong/module-graph.json", module
-      ],
-      cwd=SRC_ROOT_DIR,
-  )
   try:
-    return json.loads(jq_json)
+    with open(os.path.join(SRC_ROOT_DIR,"out/soong/module-graph.json")) as f:
+      return json.load(f)
   except json.JSONDecodeError as err:
     sys.exit(f"""Could not decode json:
-{jq_json}
+out/soong/module-graph.json
 JSONDecodeError: {err}""")
 
 
@@ -152,7 +145,8 @@ def visit_json_module_graph_post_order(module_graph, ignore_by_name,
   for module in module_graph:
     name = module["Name"]
     key = _ModuleKey(name, module["Variations"])
-    if is_windows_variation(module) or ignore_kind(module["Type"]) or name in ignore_by_name:
+    if is_windows_variation(module) or ignore_kind(
+        module["Type"]) or name in ignore_by_name:
       ignored.add(key)
       continue
     module_graph_map[key] = module
@@ -288,6 +282,8 @@ def visit_queryview_xml_module_graph_post_order(module_graph, ignored_by_name,
       if dep_name_with_variant in ignored:
         continue
       dep_name = name_with_variant_to_name[dep_name_with_variant]
+      if dep_name == "prebuilt_" + name:
+        continue
       if dep_name_with_variant not in visited:
         queryview_module_graph_post_traversal(dep_name_with_variant)
 
@@ -371,4 +367,5 @@ def ignore_json_dep(dep, module_name, ignored_keys):
   if is_prebuilt_to_source_dep(dep):
     return True
   name = dep["Name"]
-  return _ModuleKey(name, dep["Variations"]) in ignored_keys or name == module_name
+  return _ModuleKey(name,
+                    dep["Variations"]) in ignored_keys or name == module_name

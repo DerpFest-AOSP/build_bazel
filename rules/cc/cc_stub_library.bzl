@@ -109,6 +109,7 @@ def cc_stub_library_shared(name, stubs_symbol_file, version, export_includes, so
     cc_library_static(
         name = name + "_root",
         srcs_c = [name + "_files"],  # compile the stub.c file
+        copts = ["-fno-builtin"],  # ignore conflicts with builtin function signatures
         features = disable_crt_link(features) +
                    [
                        # Enable the stub library compile flags
@@ -200,4 +201,5 @@ def cc_stub_suite(name, source_library, versions, symbol_file, export_includes =
         # duplicated name if "current" is one of the versions of a library.
         name = name + "_current",
         actual = name + "-" + versions[-1],
+        tags = tags,
     )
