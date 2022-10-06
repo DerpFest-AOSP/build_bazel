@@ -14,73 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("//build/bazel/rules/cc:cc_library_shared.bzl", "cc_library_shared")
 load("//build/bazel/rules/cc:cc_library_static.bzl", "cc_library_static")
 load("//build/bazel/rules/test_common:paths.bzl", "get_package_dir_based_path")
-load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 
-def _cc_library_shared_suffix_test_impl(ctx):
-    env = analysistest.begin(ctx)
-    target = analysistest.target_under_test(env)
-    info = target[DefaultInfo]
-    suffix = ctx.attr.suffix
-
-    # NB: There may be more than 1 output file (if e.g. including a TOC)
-    outputs = [so.path for so in info.files.to_list() if so.path.endswith(".so")]
-    asserts.true(
-        env,
-        len(outputs) == 1,
-        "Expected only 1 output file; got %s" % outputs,
-    )
-    out = outputs[0]
-    suffix_ = suffix + ".so"
-    asserts.true(
-        env,
-        out.endswith(suffix_),
-        "Expected output filename to end in `%s`; it was instead %s" % (suffix_, out),
-    )
-
-    return analysistest.end(env)
-
-cc_library_shared_suffix_test = analysistest.make(
-    _cc_library_shared_suffix_test_impl,
-    attrs = {"suffix": attr.string()},
-)
-
-def _cc_library_shared_suffix():
-    name = "cc_library_shared_suffix"
-    test_name = name + "_test"
-    suffix = "-suf"
-
-    cc_library_shared(
-        name,
-        srcs = ["foo.cc"],
-        tags = ["manual"],
-        suffix = suffix,
-    )
-    cc_library_shared_suffix_test(
-        name = test_name,
-        target_under_test = name,
-        suffix = suffix,
-    )
-    return test_name
-
-def _cc_library_shared_empty_suffix():
-    name = "cc_library_shared_empty_suffix"
-    test_name = name + "_test"
-
-    cc_library_shared(
-        name,
-        srcs = ["foo.cc"],
-        tags = ["manual"],
-    )
-    cc_library_shared_suffix_test(
-        name = test_name,
-        target_under_test = name,
-    )
-    return test_name
-
-def _cc_library_shared_propagating_compilation_context_test_impl(ctx):
+def _cc_library_static_propagating_compilation_context_test_impl(ctx):
     env = analysistest.begin(ctx)
     target = analysistest.target_under_test(env)
     cc_info = target[CcInfo]
@@ -135,8 +74,8 @@ def _cc_library_shared_propagating_compilation_context_test_impl(ctx):
 
     return analysistest.end(env)
 
-_cc_library_shared_propagating_compilation_context_test = analysistest.make(
-    _cc_library_shared_propagating_compilation_context_test_impl,
+_cc_library_static_propagating_compilation_context_test = analysistest.make(
+    _cc_library_static_propagating_compilation_context_test_impl,
     attrs = {
         "expected_hdrs": attr.label_list(),
         "expected_absent_hdrs": attr.label_list(),
@@ -147,193 +86,191 @@ _cc_library_shared_propagating_compilation_context_test = analysistest.make(
     },
 )
 
-def _cc_library_shared_propagates_deps():
-    name = "_cc_library_shared_propagates_deps"
+def _cc_library_static_propagates_deps():
+    name = "_cc_library_static_propagates_deps"
     dep_name = name + "_dep"
     test_name = name + "_test"
 
-    cc_library_shared(
+    cc_library_static(
         name = dep_name,
-        hdrs = [":cc_library_shared_hdr"],
+        hdrs = [":hdr"],
         export_includes = ["a/b/c"],
         export_system_includes = ["d/e/f"],
         tags = ["manual"],
     )
 
-    cc_library_shared(
+    cc_library_static(
         name = name,
         deps = [dep_name],
         tags = ["manual"],
     )
 
-    _cc_library_shared_propagating_compilation_context_test(
+    _cc_library_static_propagating_compilation_context_test(
         name = test_name,
         target_under_test = name,
-        expected_hdrs = [":cc_library_shared_hdr"],
+        expected_hdrs = [":hdr"],
         expected_includes = ["a/b/c"],
         expected_system_includes = ["d/e/f"],
     )
 
     return test_name
 
-def _cc_library_shared_propagates_whole_archive_deps():
-    name = "_cc_library_shared_propagates_whole_archive_deps"
+def _cc_library_static_propagates_whole_archive_deps():
+    name = "_cc_library_static_propagates_whole_archive_deps"
     dep_name = name + "_dep"
     test_name = name + "_test"
 
-    cc_library_shared(
+    cc_library_static(
         name = dep_name,
-        hdrs = [":cc_library_shared_hdr"],
+        hdrs = [":hdr"],
         export_includes = ["a/b/c"],
         export_system_includes = ["d/e/f"],
         tags = ["manual"],
     )
 
-    cc_library_shared(
+    cc_library_static(
         name = name,
         whole_archive_deps = [dep_name],
         tags = ["manual"],
     )
 
-    _cc_library_shared_propagating_compilation_context_test(
+    _cc_library_static_propagating_compilation_context_test(
         name = test_name,
         target_under_test = name,
-        expected_hdrs = [":cc_library_shared_hdr"],
+        expected_hdrs = [":hdr"],
         expected_includes = ["a/b/c"],
         expected_system_includes = ["d/e/f"],
     )
 
     return test_name
 
-def _cc_library_shared_propagates_dynamic_deps():
-    name = "_cc_library_shared_propagates_dynamic_deps"
+def _cc_library_static_propagates_dynamic_deps():
+    name = "_cc_library_static_propagates_dynamic_deps"
     dep_name = name + "_dep"
     test_name = name + "_test"
 
     cc_library_shared(
         name = dep_name,
-        hdrs = [":cc_library_shared_hdr"],
+        hdrs = [":hdr"],
         export_includes = ["a/b/c"],
         export_system_includes = ["d/e/f"],
         tags = ["manual"],
     )
 
-    cc_library_shared(
+    cc_library_static(
         name = name,
         dynamic_deps = [dep_name],
         tags = ["manual"],
     )
 
-    _cc_library_shared_propagating_compilation_context_test(
+    _cc_library_static_propagating_compilation_context_test(
         name = test_name,
         target_under_test = name,
-        expected_hdrs = [":cc_library_shared_hdr"],
+        expected_hdrs = [":hdr"],
         expected_includes = ["a/b/c"],
         expected_system_includes = ["d/e/f"],
     )
 
     return test_name
 
-def _cc_library_shared_does_not_propagate_implementation_deps():
-    name = "_cc_library_shared_does_not_propagate_implementation_deps"
+def _cc_library_static_does_not_propagate_implementation_deps():
+    name = "_cc_library_static_does_not_propagate_implementation_deps"
     dep_name = name + "_dep"
     test_name = name + "_test"
 
     cc_library_static(
         name = dep_name,
-        hdrs = [":cc_library_shared_hdr"],
+        hdrs = [":hdr"],
         export_includes = ["a/b/c"],
         export_system_includes = ["d/e/f"],
         tags = ["manual"],
     )
 
-    cc_library_shared(
+    cc_library_static(
         name = name,
         implementation_deps = [dep_name],
         tags = ["manual"],
     )
 
-    _cc_library_shared_propagating_compilation_context_test(
+    _cc_library_static_propagating_compilation_context_test(
         name = test_name,
         target_under_test = name,
-        expected_absent_hdrs = [":cc_library_shared_hdr"],
+        expected_absent_hdrs = [":hdr"],
         expected_absent_includes = ["a/b/c"],
         expected_absent_system_includes = ["d/e/f"],
     )
 
     return test_name
 
-def _cc_library_shared_does_not_propagate_implementation_whole_archive_deps():
-    name = "_cc_library_shared_does_not_propagate_implementation_whole_archive_deps"
+def _cc_library_static_does_not_propagate_implementation_whole_archive_deps():
+    name = "_cc_library_static_does_not_propagate_implementation_whole_archive_deps"
     dep_name = name + "_dep"
     test_name = name + "_test"
 
     cc_library_static(
         name = dep_name,
-        hdrs = [":cc_library_shared_hdr"],
+        hdrs = [":hdr"],
         export_includes = ["a/b/c"],
         export_system_includes = ["d/e/f"],
         tags = ["manual"],
     )
 
-    cc_library_shared(
+    cc_library_static(
         name = name,
         implementation_whole_archive_deps = [dep_name],
         tags = ["manual"],
     )
 
-    _cc_library_shared_propagating_compilation_context_test(
+    _cc_library_static_propagating_compilation_context_test(
         name = test_name,
         target_under_test = name,
-        expected_absent_hdrs = [":cc_library_shared_hdr"],
+        expected_absent_hdrs = [":hdr"],
         expected_absent_includes = ["a/b/c"],
         expected_absent_system_includes = ["d/e/f"],
     )
 
     return test_name
 
-def _cc_library_shared_does_not_propagate_implementation_dynamic_deps():
-    name = "_cc_library_shared_does_not_propagate_implementation_dynamic_deps"
+def _cc_library_static_does_not_propagate_implementation_dynamic_deps():
+    name = "_cc_library_static_does_not_propagate_implementation_dynamic_deps"
     dep_name = name + "_dep"
     test_name = name + "_test"
 
     cc_library_shared(
         name = dep_name,
-        hdrs = [":cc_library_shared_hdr"],
+        hdrs = [":hdr"],
         export_includes = ["a/b/c"],
         export_system_includes = ["d/e/f"],
         tags = ["manual"],
     )
 
-    cc_library_shared(
+    cc_library_static(
         name = name,
         implementation_dynamic_deps = [dep_name],
         tags = ["manual"],
     )
 
-    _cc_library_shared_propagating_compilation_context_test(
+    _cc_library_static_propagating_compilation_context_test(
         name = test_name,
         target_under_test = name,
-        expected_absent_hdrs = [":cc_library_shared_hdr"],
+        expected_absent_hdrs = [":hdr"],
         expected_absent_includes = ["a/b/c"],
         expected_absent_system_includes = ["d/e/f"],
     )
 
     return test_name
 
-def cc_library_shared_test_suite(name):
-    native.genrule(name = "cc_library_shared_hdr", cmd = "null", outs = ["cc_shared_f.h"], tags = ["manual"])
+def cc_library_static_test_suite(name):
+    native.genrule(name = "hdr", cmd = "null", outs = ["f.h"], tags = ["manual"])
 
     native.test_suite(
         name = name,
         tests = [
-            _cc_library_shared_suffix(),
-            _cc_library_shared_empty_suffix(),
-            _cc_library_shared_propagates_deps(),
-            _cc_library_shared_propagates_whole_archive_deps(),
-            _cc_library_shared_propagates_dynamic_deps(),
-            _cc_library_shared_does_not_propagate_implementation_deps(),
-            _cc_library_shared_does_not_propagate_implementation_whole_archive_deps(),
-            _cc_library_shared_does_not_propagate_implementation_dynamic_deps(),
+            _cc_library_static_propagates_deps(),
+            _cc_library_static_propagates_whole_archive_deps(),
+            _cc_library_static_propagates_dynamic_deps(),
+            _cc_library_static_does_not_propagate_implementation_deps(),
+            _cc_library_static_does_not_propagate_implementation_whole_archive_deps(),
+            _cc_library_static_does_not_propagate_implementation_dynamic_deps(),
         ],
     )
