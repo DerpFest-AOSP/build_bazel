@@ -26,44 +26,15 @@ FLAGS_LIST=(
 )
 FLAGS="${FLAGS_LIST[@]}"
 
+source "$(dirname $0)/target_lists.sh"
+
 ###############
 # Build and test targets for device target platform.
 ###############
-BUILD_TARGETS_LIST=(
-  //art/...
-  //bionic/...
-  //bootable/recovery/tools/recovery_l10n/...
-  //build/...
-  //cts/...
-  //development/...
-  //external/...
-  //frameworks/...
-  //libnativehelper/...
-  //packages/...
-  //prebuilts/clang/host/linux-x86:all
-  //prebuilts/build-tools/tests/...
-  //platform_testing/...
-  //system/...
-  //tools/apksig/...
-  //tools/platform-compat/...
-
-  # These tools only build for host currently
-  -//external/e2fsprogs/misc:all
-  -//external/e2fsprogs/resize:all
-  -//external/e2fsprogs/debugfs:all
-  -//external/e2fsprogs/e2fsck:all
-)
-BUILD_TARGETS="${BUILD_TARGETS_LIST[@]}"
-
-TEST_TARGETS_LIST=(
-  //build/bazel/...
-)
-TEST_TARGETS="${TEST_TARGETS_LIST[@]}"
 
 ###########
 # Iterate over various products supported in the platform build.
 ###########
-
 product_prefix="aosp_"
 for arch in arm arm64 x86 x86_64; do
   # Re-run product config and bp2build for every TARGET_PRODUCT.
@@ -103,12 +74,6 @@ done
 # Host-only builds and tests
 #########
 
-HOST_INCOMPATIBLE_TARGETS=(
-  # TODO(b/216626461): add support for host_ldlibs
-  -//packages/modules/adb:all
-  -//packages/modules/adb/pairing_connection:all
-)
-
 # We can safely build and test all targets on the host linux config, and rely on
 # incompatible target skipping for tests that cannot run on the host.
 tools/bazel --max_idle_secs=5 test ${FLAGS} --build_tests_only=false -k \
@@ -118,12 +83,36 @@ tools/bazel --max_idle_secs=5 test ${FLAGS} --build_tests_only=false -k \
 # bp2build-progress
 ###################
 
+function get_soong_names_from_queryview() {
+  names=$( tools/bazel query --config=ci --config=queryview --output=xml "${@}" \
+    | awk -F'"' '$2 ~ /soong_module_name/ { print $4 }' \
+    | sort -u )
+  echo "${names[@]}"
+}
+
 # Generate bp2build progress reports and graphs for these modules into the dist
 # dir so that they can be downloaded from the CI artifact list.
 BP2BUILD_PROGRESS_MODULES=(
-  com.android.neuralnetworks
-  com.android.media.swcodec
+  NetworkStackNext  # not updatable but will be
+  build-tools  # host sdk
+  com.android.runtime  # not updatable but will be
+  platform-tools  # host sdk
 )
+
+# Query for some module types of interest so that we don't have to hardcode the
+# lists
+"${AOSP_ROOT}/build/soong/soong_ui.bash" --make-mode BP2BUILD_VERBOSE=1 --skip-soong-tests queryview
+rm -f out/ninja_build
+
+# Only apexes/apps that specify updatable=1 are mainline modules, the other are
+# "just" apexes/apps. Often this is not specified in the process of becoming a
+# mainline module as enables a number of validations.
+# Ignore defaults and test rules.
+APEX_QUERY='attr(updatable, 1, //...) - kind("_defaults rule", //...) - kind("apex_test_ rule", //...)'
+APEX_VNDK_QUERY="kind(\"apex_vndk rule\", //...)"
+
+BP2BUILD_PROGRESS_MODULES+=( $(get_soong_names_from_queryview "${APEX_QUERY}"" + ""${APEX_VNDK_QUERY}" ) )
+
 bp2build_progress_script="//build/bazel/scripts/bp2build-progress:bp2build-progress"
 bp2build_progress_output_dir="${DIST_DIR}/bp2build-progress"
 mkdir -p "${bp2build_progress_output_dir}"
@@ -131,7 +120,9 @@ mkdir -p "${bp2build_progress_output_dir}"
 report_args=""
 for m in "${BP2BUILD_PROGRESS_MODULES[@]}"; do
   report_args="$report_args -m ""${m}"
-  tools/bazel run ${FLAGS} --config=linux_x86_64 "${bp2build_progress_script}" -- graph  -m "${m}" > "${bp2build_progress_output_dir}/${m}_graph.dot"
+  if [[ "${m}" =~ (media.swcodec|neuralnetworks)$ ]]; then
+    tools/bazel run ${FLAGS} --config=linux_x86_64 "${bp2build_progress_script}" -- graph  -m "${m}" > "${bp2build_progress_output_dir}/${m}_graph.dot"
+  fi
 done
 
 tools/bazel run ${FLAGS} --config=linux_x86_64 "${bp2build_progress_script}" -- \
