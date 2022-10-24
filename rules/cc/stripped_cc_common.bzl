@@ -19,16 +19,13 @@ limitations under the License.
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
 
 # Keep this consistent with soong/cc/strip.go#NeedsStrip.
-def _needs_strip(ctx):
-    if ctx.attr.none:
-        return False
-    if ctx.target_platform_has_constraint(ctx.attr._android_constraint[platform_common.ConstraintValueInfo]):
-        return True
-    return (ctx.attr.all or ctx.attr.keep_symbols or
-            ctx.attr.keep_symbols_and_debug_frame or ctx.attr.keep_symbols_list)
+def needs_strip(attrs):
+    force_disable = attrs.none
+    force_enable = attrs.all or attrs.keep_symbols or attrs.keep_symbols_and_debug_frame or attrs.keep_symbols_list
+    return force_enable and not force_disable
 
 # Keep this consistent with soong/cc/strip.go#strip and soong/cc/builder.go#transformStrip.
-def _get_strip_args(attrs):
+def get_strip_args(attrs):
     strip_args = []
     keep_mini_debug_info = False
     if attrs.keep_symbols:
@@ -47,9 +44,9 @@ def _get_strip_args(attrs):
     return strip_args
 
 # https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/builder.go;l=131-146;drc=master
-def _stripped_impl(ctx, prefix = "", suffix = "", extension = ""):
+def stripped_impl(ctx, prefix = "", suffix = "", extension = ""):
     out_file = ctx.actions.declare_file(prefix + ctx.attr.name + suffix + extension)
-    if not _needs_strip(ctx):
+    if not needs_strip(ctx.attr):
         ctx.actions.symlink(
             output = out_file,
             target_file = ctx.files.src[0],
@@ -75,7 +72,7 @@ def _stripped_impl(ctx, prefix = "", suffix = "", extension = ""):
         ],
         outputs = [out_file, d_file],
         executable = ctx.executable._strip_script,
-        arguments = _get_strip_args(ctx.attr) + [
+        arguments = get_strip_args(ctx.attr) + [
             "-i",
             ctx.files.src[0].path,
             "-o",
@@ -87,65 +84,65 @@ def _stripped_impl(ctx, prefix = "", suffix = "", extension = ""):
     )
     return out_file
 
-common_attrs = {
-    "keep_symbols": attr.bool(default = False),
-    "keep_symbols_and_debug_frame": attr.bool(default = False),
-    "all": attr.bool(default = False),
-    "none": attr.bool(default = False),
-    "keep_symbols_list": attr.string_list(default = []),
-    "_xz": attr.label(
+strip_attrs = dict(
+    keep_symbols = attr.bool(default = False),
+    keep_symbols_and_debug_frame = attr.bool(default = False),
+    all = attr.bool(default = False),
+    none = attr.bool(default = False),
+    keep_symbols_list = attr.string_list(default = []),
+)
+common_strip_attrs = dict(
+    strip_attrs,
+    _xz = attr.label(
         cfg = "exec",
         executable = True,
         allow_single_file = True,
         default = "//prebuilts/build-tools:linux-x86/bin/xz",
     ),
-    "_create_minidebuginfo": attr.label(
+    _create_minidebuginfo = attr.label(
         cfg = "exec",
         executable = True,
         allow_single_file = True,
         default = "//prebuilts/build-tools:linux-x86/bin/create_minidebuginfo",
     ),
-    "_strip_script": attr.label(
+    _strip_script = attr.label(
         cfg = "exec",
         executable = True,
         allow_single_file = True,
         default = "//build/soong/scripts:strip.sh",
     ),
-    "_ar": attr.label(
+    _ar = attr.label(
         cfg = "exec",
         executable = True,
         allow_single_file = True,
         default = "//prebuilts/clang/host/linux-x86:llvm-ar",
     ),
-    "_strip": attr.label(
+    _strip = attr.label(
         cfg = "exec",
         executable = True,
         allow_single_file = True,
         default = "//prebuilts/clang/host/linux-x86:llvm-strip",
     ),
-    "_readelf": attr.label(
+    _readelf = attr.label(
         cfg = "exec",
         executable = True,
         allow_single_file = True,
         default = "//prebuilts/clang/host/linux-x86:llvm-readelf",
     ),
-    "_objcopy": attr.label(
+    _objcopy = attr.label(
         cfg = "exec",
         executable = True,
         allow_single_file = True,
         default = "//prebuilts/clang/host/linux-x86:llvm-objcopy",
     ),
-    "_cc_toolchain": attr.label(
+    _cc_toolchain = attr.label(
         default = Label("@local_config_cc//:toolchain"),
         providers = [cc_common.CcToolchainInfo],
     ),
-    "_android_constraint": attr.label(
-        default = Label("//build/bazel/platforms/os:android"),
-    ),
-}
+)
 
 def _stripped_shared_library_impl(ctx):
-    out_file = _stripped_impl(ctx, prefix = "lib", extension = ".so")
+    out_file = stripped_impl(ctx, prefix = "lib", extension = ".so")
 
     return [
         DefaultInfo(files = depset([out_file])),
@@ -156,7 +153,7 @@ def _stripped_shared_library_impl(ctx):
 stripped_shared_library = rule(
     implementation = _stripped_shared_library_impl,
     attrs = dict(
-        common_attrs,
+        common_strip_attrs,
         src = attr.label(
             mandatory = True,
             # TODO(b/217908237): reenable allow_single_file
@@ -180,7 +177,7 @@ def _stripped_binary_impl(ctx):
         StrippedCcBinaryInfo(),  # a marker for dependents
     ]
 
-    out_file = _stripped_impl(ctx, suffix = ctx.attr.suffix)
+    out_file = stripped_impl(ctx, suffix = ctx.attr.suffix)
 
     return [
         DefaultInfo(
@@ -192,7 +189,7 @@ def _stripped_binary_impl(ctx):
 stripped_binary = rule(
     implementation = _stripped_binary_impl,
     attrs = dict(
-        common_attrs,
+        common_strip_attrs,
         src = attr.label(mandatory = True, allow_single_file = True, providers = [CcInfo]),
         runtime_deps = attr.label_list(
             providers = [CcInfo],

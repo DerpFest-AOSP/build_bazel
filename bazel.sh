@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -eo pipefail
 
 # TODO: Refactor build/make/envsetup.sh to make gettop() available elsewhere
@@ -99,6 +98,7 @@ function verify_soong_outputs_exist() {
 
     local bazel_configs=(
         "bp2build"
+        "api_bp2build"
         "queryview"
     )
     local valid_bazel_config=0
@@ -181,6 +181,15 @@ fi
 # In order to be able to load JNI libraries, this directory needs to exist
 mkdir -p "${ABSOLUTE_OUT_DIR}/bazel/javatmp"
 
+# Output a deps file. Soong will read these as dependencies for mixed builds
+mkdir -p "${ABSOLUTE_OUT_DIR}/tools/"
+touch $ABSOLUTE_OUT_DIR/tools/bazel.list
+
+echo $ANDROID_BAZEL_PATH > $ABSOLUTE_OUT_DIR/tools/bazel.list
+echo $ANDROID_BAZELRC_PATH >> $ABSOLUTE_OUT_DIR/tools/bazel.list
+echo $ANDROID_BAZEL_JDK_PATH >> $ABSOLUTE_OUT_DIR/tools/bazel.list
+
+
 ADDITIONAL_FLAGS=()
 if  is_standalone_bazel; then
     # STANDALONE_BAZEL is set.
@@ -205,6 +214,7 @@ JAVA_HOME="${ANDROID_BAZEL_JDK_PATH}" "${ANDROID_BAZEL_PATH}" \
   --server_javabase="${ANDROID_BAZEL_JDK_PATH}" \
   --output_user_root="${ABSOLUTE_OUT_DIR}/bazel/output_user_root" \
   --host_jvm_args=-Djava.io.tmpdir="${ABSOLUTE_OUT_DIR}/bazel/javatmp" \
+  --nohome_rc --nosystem_rc \
   --bazelrc="${ANDROID_BAZELRC_PATH}" \
   "${ADDITIONAL_FLAGS[@]}" \
   "$@"

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("//build/bazel/rules:sh_binary.bzl", "sh_binary")
+load("//build/bazel/rules/android:android_app_certificate.bzl", "AndroidAppCertificateInfo", "android_app_certificate")
 load("//build/bazel/rules/cc:cc_binary.bzl", "cc_binary")
 load("//build/bazel/rules/cc:cc_library_shared.bzl", "cc_library_shared")
 load("//build/bazel/rules/cc:cc_library_static.bzl", "cc_library_static")
@@ -25,6 +26,12 @@ load(":apex_test_helpers.bzl", "test_apex")
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("@bazel_skylib//lib:new_sets.bzl", "sets")
 load("@soong_injection//apex_toolchain:constants.bzl", "default_manifest_version")
+
+ActionArgsInfo = provider(
+    fields = {
+        "argv": "The link action arguments.",
+    },
+)
 
 def _canned_fs_config_test(ctx):
     env = analysistest.begin(ctx)
@@ -1078,6 +1085,180 @@ def _test_min_sdk_version_failure_transitive():
 
     return test_name
 
+def _apex_certificate_test(ctx):
+    env = analysistest.begin(ctx)
+    target_under_test = analysistest.target_under_test(env)
+    cert = target_under_test[ApexInfo].container_key_pair
+
+    asserts.equals(env, ctx.attr.expected_pem_path, cert[0].path)
+    asserts.equals(env, ctx.attr.expected_pk8_path, cert[1].path)
+
+    return analysistest.end(env)
+
+apex_certificate_test = analysistest.make(
+    _apex_certificate_test,
+    attrs = {
+        "expected_pem_path": attr.string(),
+        "expected_pk8_path": attr.string(),
+    },
+)
+
+def _test_apex_certificate_none():
+    name = "apex_certificate_none"
+    test_name = name + "_test"
+
+    test_apex(
+        name = name,
+        certificate = None,
+    )
+
+    apex_certificate_test(
+        name = test_name,
+        target_under_test = name,
+        expected_pem_path = "build/make/target/product/security/testkey.x509.pem",
+        expected_pk8_path = "build/make/target/product/security/testkey.pk8",
+    )
+
+    return test_name
+
+def _test_apex_certificate_name():
+    name = "apex_certificate_name"
+    test_name = name + "_test"
+
+    test_apex(
+        name = name,
+        certificate = None,
+        certificate_name = "shared",  # use something other than testkey
+    )
+
+    apex_certificate_test(
+        name = test_name,
+        target_under_test = name,
+        expected_pem_path = "build/make/target/product/security/shared.x509.pem",
+        expected_pk8_path = "build/make/target/product/security/shared.pk8",
+    )
+
+    return test_name
+
+def _test_apex_certificate_label():
+    name = "apex_certificate_label"
+    test_name = name + "_test"
+
+    android_app_certificate(
+        name = name + "_cert",
+        certificate = name,
+        tags = ["manual"],
+    )
+
+    test_apex(
+        name = name,
+        certificate = name + "_cert",
+    )
+
+    apex_certificate_test(
+        name = test_name,
+        target_under_test = name,
+        expected_pem_path = "build/bazel/rules/apex/apex_certificate_label.x509.pem",
+        expected_pk8_path = "build/bazel/rules/apex/apex_certificate_label.pk8",
+    )
+
+    return test_name
+
+def _min_sdk_version_apex_inherit_test_impl(ctx):
+    env = analysistest.begin(ctx)
+    target_under_test = analysistest.target_under_test(env)
+    argv = target_under_test[ActionArgsInfo].argv
+
+    found = False
+    for arg in argv:
+        if arg.startswith("--target="):
+            found = True
+            asserts.true(
+                env,
+                arg.endswith(ctx.attr.apex_min),
+                "Incorrect --target flag: %s %s" % (arg, ctx.attr.apex_min),
+            )
+
+    asserts.true(
+        env,
+        found,
+        "No --target flag found: %s" % argv,
+    )
+
+    return analysistest.end(env)
+
+def _feature_check_aspect_impl(target, ctx):
+    rules_propagate_src = [
+        "_bssl_hash_injection",
+        "stripped_shared_library",
+        "versioned_shared_library",
+    ]
+
+    argv = []
+    if ctx.rule.kind == "cc_shared_library" and target.label.name == ctx.attr.cc_target:
+        link_actions = [a for a in target.actions if a.mnemonic == "CppLink"]
+        argv = link_actions[0].argv
+    elif ctx.rule.kind in rules_propagate_src and hasattr(ctx.rule.attr, "src"):
+        argv = ctx.rule.attr.src[ActionArgsInfo].argv
+    elif ctx.rule.kind == "_cc_library_shared_proxy" and hasattr(ctx.rule.attr, "shared"):
+        argv = ctx.rule.attr.shared[ActionArgsInfo].argv
+    elif ctx.rule.kind == "_apex" and hasattr(ctx.rule.attr, "native_shared_libs_32"):
+        argv = ctx.rule.attr.native_shared_libs_32[0][ActionArgsInfo].argv
+
+    return [
+        ActionArgsInfo(
+            argv = argv,
+        ),
+    ]
+
+feature_check_aspect = aspect(
+    implementation = _feature_check_aspect_impl,
+    attrs = {
+        "cc_target": attr.string(values = ["min_sdk_version_apex_inherit_lib_cc_unstripped"]),
+    },
+    attr_aspects = ["native_shared_libs_32", "shared", "src"],
+)
+
+min_sdk_version_apex_inherit_test = analysistest.make(
+    _min_sdk_version_apex_inherit_test_impl,
+    attrs = {
+        "apex_min": attr.string(),
+        "cc_target": attr.string(),
+    },
+    # We need to use aspect to examine the dependencies' actions of the apex
+    # target as the result of the transition, checking the dependencies directly
+    # using names will give you the info before the transition takes effect.
+    extra_target_under_test_aspects = [feature_check_aspect],
+)
+
+def _test_min_sdk_version_apex_inherit():
+    name = "min_sdk_version_apex_inherit"
+    test_name = name + "_test"
+    cc_name = name + "_lib_cc"
+    apex_min = "28"
+
+    cc_library_shared(
+        name = cc_name,
+        srcs = [name + "_lib.cc"],
+        tags = ["manual"],
+        min_sdk_version = "apex_inherit",
+    )
+
+    test_apex(
+        name = name,
+        native_shared_libs_32 = [cc_name],
+        min_sdk_version = apex_min,
+    )
+
+    min_sdk_version_apex_inherit_test(
+        name = test_name,
+        target_under_test = name,
+        apex_min = apex_min,
+        cc_target = cc_name + "_unstripped",
+    )
+
+    return test_name
+
 def apex_test_suite(name):
     native.test_suite(
         name = name,
@@ -1104,5 +1285,9 @@ def apex_test_suite(name):
             _test_default_apex_manifest_version(),
             _test_min_sdk_version_failure(),
             _test_min_sdk_version_failure_transitive(),
+            _test_apex_certificate_none(),
+            _test_apex_certificate_name(),
+            _test_apex_certificate_label(),
+            _test_min_sdk_version_apex_inherit(),
         ],
     )
