@@ -105,6 +105,7 @@ apex_toolchain(
     conv_apex_manifest = "//system/apex/apexer:conv_apex_manifest",
     e2fsdroid = "//external/e2fsprogs/contrib/android:e2fsdroid",
     jsonmodify = "//build/soong/scripts:jsonmodify",
+    manifest_fixer = "//build/soong/scripts:manifest_fixer",
     mke2fs = "//external/e2fsprogs/misc:mke2fs",
     resize2fs = "//external/e2fsprogs/resize:resize2fs",
     sefcontext_compile = "//external/selinux/libselinux:sefcontext_compile",
@@ -134,4 +135,10 @@ apex_aab_test_suite(
 
 apex_key_test_suite(
     name = "apex_key_tests",
+)
+
+filegroup(
+    name = "signapk_deploy_jar",
+    srcs = ["//build/make/tools/signapk:signapk_deploy.jar"],
+    visibility = ["//visibility:public"],
 )
