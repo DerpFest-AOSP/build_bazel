@@ -35,8 +35,9 @@ ApexInfo = provider(
         "requires_native_libs": "Labels of native shared libs that this apex requires.",
         "unsigned_output": "Unsigned .apex file.",
         "signed_output": "Signed .apex file.",
-        "bundle_key_pair": "APEX bundle signing public/private key pair (the value of the key: attribute).",
-        "container_key_pair": "APEX zip signing public/private key pair (the value of the certificate: attribute).",
+        "bundle_key_info": "APEX bundle signing public/private key pair (the value of the key: attribute).",
+        "container_key_info": "Info of the container key provided as AndroidAppCertificateInfo.",
+        "package_name": "APEX package name.",
     },
 )
 
@@ -228,6 +229,32 @@ def _generate_file_contexts(ctx):
 
     return file_contexts
 
+# TODO(b/255592586): This can be reused by Java rules later.
+def _mark_manifest_as_test_only(ctx, apex_toolchain):
+    if ctx.file.android_manifest == None:
+        return None
+
+    args = ctx.actions.args()
+    args.add("--test-only")
+
+    android_manifest = ctx.file.android_manifest
+    dir_name = android_manifest.dirname
+    base_name = android_manifest.basename
+    android_manifest_fixed = ctx.actions.declare_file(paths.join(dir_name, "manifest_fixer", base_name))
+
+    args.add(android_manifest)
+    args.add(android_manifest_fixed)
+
+    ctx.actions.run(
+        inputs = [android_manifest],
+        outputs = [android_manifest_fixed],
+        executable = apex_toolchain.manifest_fixer[DefaultInfo].files_to_run,
+        arguments = [args],
+        mnemonic = "MarkAndroidManifestTestOnly",
+    )
+
+    return android_manifest_fixed
+
 # apexer - generate the APEX file.
 def _run_apexer(ctx, apex_toolchain):
     # Inputs
@@ -235,7 +262,6 @@ def _run_apexer(ctx, apex_toolchain):
     privkey = apex_key_info.private_key
     pubkey = apex_key_info.public_key
     android_jar = apex_toolchain.android_jar
-    android_manifest = ctx.file.android_manifest
 
     file_mapping, requires_native_libs, provides_native_libs = _create_file_mapping(ctx)
     canned_fs_config = _generate_canned_fs_config(ctx, file_mapping.values())
@@ -302,8 +328,13 @@ def _run_apexer(ctx, apex_toolchain):
 
     args.add_all(["--apexer_tool_path", ":".join(apexer_tool_paths)])
 
+    android_manifest = ctx.file.android_manifest
     if android_manifest != None:
+        if ctx.attr.testonly:
+            android_manifest = _mark_manifest_as_test_only(ctx, apex_toolchain)
         args.add_all(["--android_manifest", android_manifest.path])
+    elif ctx.attr.testonly:
+        args.add("--test_only")
 
     args.add("STAGING_DIR_PLACEHOLDER")
     args.add(apex_output_file)
@@ -426,8 +457,9 @@ def _apex_rule_impl(ctx):
             unsigned_output = unsigned_apex,
             requires_native_libs = requires_native_libs,
             provides_native_libs = provides_native_libs,
-            bundle_key_pair = [apex_key_info.public_key, apex_key_info.private_key],
-            container_key_pair = [public_key, private_key],
+            bundle_key_info = apex_key_info,
+            container_key_info = apex_cert_info,
+            package_name = ctx.attr.package_name,
         ),
     ]
 
@@ -518,6 +550,9 @@ def apex(
         prebuilts = [],
         package_name = None,
         logging_parent = None,
+        testonly = False,
+        # TODO(b/255400736): tests are not fully supported yet.
+        tests = [],
         **kwargs):
     "Bazel macro to correspond with the APEX bundle Soong module."
 
@@ -525,6 +560,11 @@ def apex(
     # https://cs.android.com/android/platform/superproject/+/master:build/soong/apex/builder.go;l=259-263;drc=b02043b84d86fe1007afef1ff012a2155172215c
     if file_contexts == None:
         file_contexts = "//system/sepolicy/apex:" + name + "-file_contexts"
+
+    if testonly:
+        compressible = False
+    elif tests:
+        fail("Apex with tests attribute needs to be testonly.")
 
     apex_output = name + ".apex"
     capex_output = None
@@ -569,5 +609,6 @@ def apex(
         # $ bazel build //path/to/module:com.android.module.capex
         apex_output = apex_output,
         capex_output = capex_output,
+        testonly = testonly,
         **kwargs
     )
