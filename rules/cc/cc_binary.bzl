@@ -60,6 +60,10 @@ def cc_binary(
         use_version_lib = False,
         tags = [],
         generate_cc_test = False,
+        tidy = None,
+        tidy_checks = None,
+        tidy_checks_as_errors = None,
+        tidy_flags = None,
         **kwargs):
     "Bazel macro to correspond with the cc_binary Soong module."
 
@@ -67,8 +71,6 @@ def cc_binary(
     unstripped_name = name + "_unstripped"
 
     toolchain_features = []
-    toolchain_features += features
-
     if linkshared:
         toolchain_features.extend(["dynamic_executable", "dynamic_linker"])
     else:
@@ -79,6 +81,7 @@ def cc_binary(
 
     if min_sdk_version:
         toolchain_features += parse_sdk_version(min_sdk_version) + ["-sdk_version_default"]
+    toolchain_features += features
 
     system_dynamic_deps = []
     system_static_deps = []
@@ -126,6 +129,10 @@ def cc_binary(
         system_dynamic_deps = system_dynamic_deps,
         target_compatible_with = target_compatible_with,
         tags = ["manual"],
+        tidy = tidy,
+        tidy_checks = tidy_checks,
+        tidy_checks_as_errors = tidy_checks_as_errors,
+        tidy_flags = tidy_flags,
     )
 
     binary_dynamic_deps = add_lists_defaulting_to_none(
