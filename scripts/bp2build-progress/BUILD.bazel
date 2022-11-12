@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("//build/bazel/rules/python:py_proto.bzl", "py_proto_library")
+
 py_library(
     name = "dependency_analysis",
     srcs = ["dependency_analysis.py"],
@@ -29,12 +31,15 @@ py_binary(
     name = "bp2build-progress",
     srcs = ["bp2build-progress.py"],
     visibility = ["//visibility:public"],
-    deps = [":dependency_analysis"],
+    deps = [
+        "//build/soong/ui/metrics/bp2build_progress_metrics_proto:bp2build_py_proto",
+        ":dependency_analysis",
+    ],
 )
 
 py_binary(
-    name = "bp2build-module-dep-infos",
-    srcs = ["bp2build-module-dep-infos.py"],
+    name = "bp2build_module_dep_infos",
+    srcs = ["bp2build_module_dep_infos.py"],
     visibility = ["//visibility:public"],
     deps = [":dependency_analysis"],
 )

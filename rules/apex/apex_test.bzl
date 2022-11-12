@@ -15,18 +15,30 @@
 load("//build/bazel/rules:sh_binary.bzl", "sh_binary")
 load("//build/bazel/rules/cc:cc_binary.bzl", "cc_binary")
 load("//build/bazel/rules/cc:cc_library_shared.bzl", "cc_library_shared")
+load("//build/bazel/rules/cc:cc_library_static.bzl", "cc_library_static")
+load("//build/bazel/rules/cc:cc_stub_library.bzl", "cc_stub_suite")
 load("//build/bazel/rules:prebuilt_file.bzl", "prebuilt_file")
+load("//build/bazel/platforms:platform_utils.bzl", "platforms")
 load(":apex.bzl", "ApexInfo", "apex")
 load(":apex_key.bzl", "apex_key")
 load(":apex_test_helpers.bzl", "test_apex")
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("@bazel_skylib//lib:new_sets.bzl", "sets")
+load("@soong_injection//apex_toolchain:constants.bzl", "default_manifest_version")
 
 def _canned_fs_config_test(ctx):
     env = analysistest.begin(ctx)
     actions = analysistest.target_actions(env)
 
     found_canned_fs_config_action = False
+
+    def pretty_print_list(l):
+        if not l:
+            return "[]"
+        result = "[\n"
+        for item in l:
+            result += "  \"%s\",\n" % item
+        return result + "]"
 
     for a in actions:
         if a.mnemonic != "FileWrite":
@@ -43,8 +55,9 @@ def _canned_fs_config_test(ctx):
 
         # Don't sort -- the order is significant.
         actual_entries = a.content.split("\n")
-        expected_entries = ctx.attr.expected_entries
-        asserts.equals(env, expected_entries, actual_entries)
+        replacement = "64" if platforms.get_target_bitness(ctx.attr._platform_utils) == 64 else ""
+        expected_entries = [x.replace("{64_OR_BLANK}", replacement) for x in ctx.attr.expected_entries]
+        asserts.equals(env, pretty_print_list(expected_entries), pretty_print_list(actual_entries))
 
         break
 
@@ -58,6 +71,9 @@ canned_fs_config_test = analysistest.make(
     attrs = {
         "expected_entries": attr.string_list(
             doc = "Expected lines in the canned_fs_config.txt",
+        ),
+        "_platform_utils": attr.label(
+            default = Label("//build/bazel/platforms:platform_utils"),
         ),
     },
 )
@@ -109,9 +125,11 @@ def _test_canned_fs_config_binaries():
             "/ 1000 1000 0755",
             "/apex_manifest.json 1000 1000 0644",
             "/apex_manifest.pb 1000 1000 0644",
+            "/lib{64_OR_BLANK}/libc++.so 1000 1000 0644",
             "/bin/bin_cc 0 2000 0755",
             "/bin/bin_sh 0 2000 0755",
             "/bin 0 2000 0755",
+            "/lib{64_OR_BLANK} 0 2000 0755",
             "",  # ends with a newline
         ],
     )
@@ -300,6 +318,69 @@ def _test_canned_fs_config_prebuilts_sort_order():
             "/etc/a 0 2000 0755",
             "/etc/a/c 0 2000 0755",
             "/etc/b 0 2000 0755",
+            "",  # ends with a newline
+        ],
+    )
+
+    return test_name
+
+def _test_canned_fs_config_runtime_deps():
+    name = "apex_canned_fs_config_runtime_deps"
+    test_name = name + "_test"
+
+    cc_library_shared(
+        name = name + "_runtime_dep_3",
+        srcs = ["lib2.cc"],
+        tags = ["manual"],
+    )
+
+    cc_library_static(
+        name = name + "_static_lib",
+        srcs = ["lib3.cc"],
+        runtime_deps = [name + "_runtime_dep_3"],
+        tags = ["manual"],
+    )
+
+    cc_library_shared(
+        name = name + "_runtime_dep_2",
+        srcs = ["lib2.cc"],
+        tags = ["manual"],
+    )
+
+    cc_library_shared(
+        name = name + "_runtime_dep_1",
+        srcs = ["lib.cc"],
+        runtime_deps = [name + "_runtime_dep_2"],
+        tags = ["manual"],
+    )
+
+    cc_binary(
+        name = name + "_bin_cc",
+        srcs = ["bin.cc"],
+        runtime_deps = [name + "_runtime_dep_1"],
+        deps = [name + "_static_lib"],
+        tags = ["manual"],
+    )
+
+    test_apex(
+        name = name,
+        binaries = [name + "_bin_cc"],
+    )
+
+    canned_fs_config_test(
+        name = test_name,
+        target_under_test = name,
+        expected_entries = [
+            "/ 1000 1000 0755",
+            "/apex_manifest.json 1000 1000 0644",
+            "/apex_manifest.pb 1000 1000 0644",
+            "/lib{64_OR_BLANK}/%s_runtime_dep_1.so 1000 1000 0644" % name,
+            "/lib{64_OR_BLANK}/%s_runtime_dep_2.so 1000 1000 0644" % name,
+            "/lib{64_OR_BLANK}/%s_runtime_dep_3.so 1000 1000 0644" % name,
+            "/lib{64_OR_BLANK}/libc++.so 1000 1000 0644",
+            "/bin/%s_bin_cc 0 2000 0755" % name,
+            "/bin 0 2000 0755",
+            "/lib{64_OR_BLANK} 0 2000 0755",
             "",  # ends with a newline
         ],
     )
@@ -531,17 +612,50 @@ def _test_apex_manifest_dependencies_requires():
         name = name + "_lib_with_dep",
         system_dynamic_deps = [],
         stl = "none",
-        implementation_dynamic_deps = [name + "_libfoo"],
+        implementation_dynamic_deps = select({
+            "//build/bazel/rules/apex:android-in_apex": [name + "_libfoo_stub_libs_current"],
+            "//build/bazel/rules/apex:android-non_apex": [name + "_libfoo"],
+        }),
         tags = ["manual"],
+        has_stubs = True,
+    )
+
+    native.genrule(
+        name = name + "_genrule_lib_with_dep_map_txt",
+        outs = [name + "_lib_with_dep.map.txt"],
+        cmd = "touch $@",
+        tags = ["manual"],
+    )
+
+    cc_stub_suite(
+        name = name + "_lib_with_dep_stub_libs",
+        soname = name + "_lib_with_dep.so",
+        source_library = ":" + name + "_lib_with_dep",
+        symbol_file = name + "_lib_with_dep.map.txt",
+        versions = ["30"],
     )
 
     cc_library_shared(
         name = name + "_libfoo",
         system_dynamic_deps = [],
         stl = "none",
-        stubs_versions = ["1"],
-        stubs_symbol_file = name + "_libfoo.map.txt",
         tags = ["manual"],
+        has_stubs = False,
+    )
+
+    native.genrule(
+        name = name + "_genrule_libfoo_map_txt",
+        outs = [name + "_libfoo.map.txt"],
+        cmd = "touch $@",
+        tags = ["manual"],
+    )
+
+    cc_stub_suite(
+        name = name + "_libfoo_stub_libs",
+        soname = name + "_libfoo.so",
+        source_library = ":" + name + "_libfoo",
+        symbol_file = name + "_libfoo.map.txt",
+        versions = ["30"],
     )
 
     test_apex(
@@ -554,7 +668,7 @@ def _test_apex_manifest_dependencies_requires():
         name = test_name,
         target_under_test = name,
         requires_native_libs = [name + "_libfoo"],
-        provides_native_libs = [],
+        provides_native_libs = [name + "_lib_with_dep"],
     )
 
     return test_name
@@ -565,11 +679,25 @@ def _test_apex_manifest_dependencies_provides():
 
     cc_library_shared(
         name = name + "_libfoo",
-        stubs_versions = ["1"],
-        stubs_symbol_file = name + "_libfoo.map.txt",
         system_dynamic_deps = [],
         stl = "none",
         tags = ["manual"],
+        has_stubs = True,
+    )
+
+    native.genrule(
+        name = name + "_genrule_libfoo_map_txt",
+        outs = [name + "_libfoo.map.txt"],
+        cmd = "touch $@",
+        tags = ["manual"],
+    )
+
+    cc_stub_suite(
+        name = name + "_libfoo_stub_libs",
+        soname = name + "_libfoo.so",
+        source_library = ":" + name + "_libfoo",
+        symbol_file = name + "_libfoo.map.txt",
+        versions = ["30"],
     )
 
     test_apex(
@@ -595,17 +723,50 @@ def _test_apex_manifest_dependencies_selfcontained():
         name = name + "_lib_with_dep",
         system_dynamic_deps = [],
         stl = "none",
-        implementation_dynamic_deps = [name + "_libfoo"],
+        implementation_dynamic_deps = select({
+            "//build/bazel/rules/apex:android-in_apex": [name + "_libfoo_stub_libs_current"],
+            "//build/bazel/rules/apex:android-non_apex": [name + "_libfoo"],
+        }),
         tags = ["manual"],
+        has_stubs = True,
+    )
+
+    native.genrule(
+        name = name + "_genrule_lib-with_dep_map_txt",
+        outs = [name + "_lib_with_dep.map.txt"],
+        cmd = "touch $@",
+        tags = ["manual"],
+    )
+
+    cc_stub_suite(
+        name = name + "_lib_with_dep_stub_libs",
+        soname = name + "_lib_with_dep.so",
+        source_library = ":" + name + "_lib_with_dep",
+        symbol_file = name + "_lib_with_dep.map.txt",
+        versions = ["30"],
     )
 
     cc_library_shared(
         name = name + "_libfoo",
-        stubs_versions = ["1"],
-        stubs_symbol_file = name + "_libfoo.map.txt",
         system_dynamic_deps = [],
         stl = "none",
         tags = ["manual"],
+        has_stubs = True,
+    )
+
+    native.genrule(
+        name = name + "_genrule_libfoo_map_txt",
+        outs = [name + "_libfoo.map.txt"],
+        cmd = "touch $@",
+        tags = ["manual"],
+    )
+
+    cc_stub_suite(
+        name = name + "_libfoo_stub_libs",
+        soname = name + "_libfoo.so",
+        source_library = ":" + name + "_libfoo",
+        symbol_file = name + "_libfoo.map.txt",
+        versions = ["30"],
     )
 
     test_apex(
@@ -624,7 +785,10 @@ def _test_apex_manifest_dependencies_selfcontained():
         name = test_name,
         target_under_test = name,
         requires_native_libs = [],
-        provides_native_libs = [name + "_libfoo"],
+        provides_native_libs = [
+            name + "_lib_with_dep",
+            name + "_libfoo",
+        ],
     )
 
     return test_name
@@ -639,8 +803,10 @@ def _test_apex_manifest_dependencies_cc_binary():
         system_deps = [],
         dynamic_deps = [
             name + "_lib_with_dep",
-            name + "_librequires2",
-        ],
+        ] + select({
+            "//build/bazel/rules/apex:android-in_apex": [name + "_librequires2_stub_libs_current"],
+            "//build/bazel/rules/apex:android-non_apex": [name + "_librequires2"],
+        }),
         tags = ["manual"],
     )
 
@@ -648,26 +814,57 @@ def _test_apex_manifest_dependencies_cc_binary():
         name = name + "_lib_with_dep",
         system_dynamic_deps = [],
         stl = "none",
-        implementation_dynamic_deps = [name + "_librequires"],
+        implementation_dynamic_deps = select({
+            "//build/bazel/rules/apex:android-in_apex": [name + "_librequires_stub_libs_current"],
+            "//build/bazel/rules/apex:android-non_apex": [name + "_librequires"],
+        }),
         tags = ["manual"],
     )
 
     cc_library_shared(
         name = name + "_librequires",
-        stubs_versions = ["1"],
-        stubs_symbol_file = name + "_librequires.map.txt",
         system_dynamic_deps = [],
         stl = "none",
         tags = ["manual"],
+        has_stubs = True,
+    )
+
+    native.genrule(
+        name = name + "_genrule_librequires_map_txt",
+        outs = [name + "_librequires.map.txt"],
+        cmd = "touch $@",
+        tags = ["manual"],
+    )
+
+    cc_stub_suite(
+        name = name + "_librequires_stub_libs",
+        soname = name + "_librequires.so",
+        source_library = ":" + name + "_librequires",
+        symbol_file = name + "_librequires.map.txt",
+        versions = ["30"],
     )
 
     cc_library_shared(
         name = name + "_librequires2",
-        stubs_versions = ["1"],
-        stubs_symbol_file = name + "_librequires2.map.txt",
         system_dynamic_deps = [],
         stl = "none",
         tags = ["manual"],
+        has_stubs = True,
+    )
+
+    native.genrule(
+        name = name + "_genrule_librequires2_map_txt",
+        outs = [name + "_librequires2.map.txt"],
+        cmd = "touch $@",
+        tags = ["manual"],
+    )
+
+    cc_stub_suite(
+        name = name + "_librequires2_stub_libs",
+        soname = name + "_librequires2.so",
+        source_library = ":" + name + "_librequires2",
+        symbol_file = name + "_librequires2.map.txt",
+        versions = ["30"],
     )
 
     test_apex(
@@ -686,25 +883,26 @@ def _test_apex_manifest_dependencies_cc_binary():
 
     return test_name
 
-def _apexer_args_test(ctx):
+def _action_args_test(ctx):
     env = analysistest.begin(ctx)
     actions = analysistest.target_actions(env)
 
-    apexer_action = [a for a in actions if a.mnemonic == "Apexer"][0]
-    flag_idx = apexer_action.argv.index(ctx.attr.expected_args[0])
+    action = [a for a in actions if a.mnemonic == ctx.attr.action_mnemonic][0]
+    flag_idx = action.argv.index(ctx.attr.expected_args[0])
 
     for i, expected_arg in enumerate(ctx.attr.expected_args):
         asserts.equals(
             env,
             expected_arg,
-            apexer_action.argv[flag_idx + i],
+            action.argv[flag_idx + i],
         )
 
     return analysistest.end(env)
 
-apexer_args_test = analysistest.make(
-    _apexer_args_test,
+action_args_test = analysistest.make(
+    _action_args_test,
     attrs = {
+        "action_mnemonic": attr.string(mandatory = True),
         "expected_args": attr.string_list(mandatory = True),
     },
 )
@@ -718,12 +916,35 @@ def _test_logging_parent_flag():
         logging_parent = "logging.parent",
     )
 
-    apexer_args_test(
+    action_args_test(
         name = test_name,
         target_under_test = name,
+        action_mnemonic = "Apexer",
         expected_args = [
             "--logging_parent",
             "logging.parent",
+        ],
+    )
+
+    return test_name
+
+def _test_default_apex_manifest_version():
+    name = "default_apex_manifest_version"
+    test_name = name + "_test"
+
+    test_apex(
+        name = name,
+    )
+
+    action_args_test(
+        name = test_name,
+        target_under_test = name,
+        action_mnemonic = "ApexManifestModify",
+        expected_args = [
+            "-se",
+            "version",
+            "0",
+            str(default_manifest_version),
         ],
     )
 
@@ -784,6 +1005,7 @@ def apex_test_suite(name):
             _test_canned_fs_config_native_shared_libs_arm64(),
             _test_canned_fs_config_prebuilts(),
             _test_canned_fs_config_prebuilts_sort_order(),
+            _test_canned_fs_config_runtime_deps(),
             _test_apex_manifest(),
             _test_apex_manifest_min_sdk_version(),
             _test_apex_manifest_min_sdk_version_current(),
@@ -796,5 +1018,6 @@ def apex_test_suite(name):
             _test_apex_manifest_dependencies_cc_binary(),
             _test_logging_parent_flag(),
             _test_generate_file_contexts(),
+            _test_default_apex_manifest_version(),
         ],
     )
