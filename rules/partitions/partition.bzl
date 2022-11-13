@@ -303,14 +303,16 @@ def _partition_impl(ctx):
     for dep in ctx.attr.deps:
         files.update(dep[InstallableInfo].files)
 
-    for v in files.values():
+    for v in files.keys():
         if not v.startswith("/system"):
             fail("Files outside of /system are not currently supported: %s", v)
 
     file_mapping_file = ctx.actions.declare_file(ctx.attr.name + "/partition_file_mapping.json")
 
     # It seems build_image will prepend /system to the paths when building_system_image=true
-    ctx.actions.write(file_mapping_file, json.encode({k.path: v.removeprefix("/system") for k, v in files.items()}))
+    ctx.actions.write(file_mapping_file, json.encode({k.removeprefix("/system"): v.path for k, v in files.items()}))
+
+    staging_dir = ctx.actions.declare_directory(ctx.attr.name + "_staging_dir")
 
     ctx.actions.run(
         inputs = [
@@ -326,11 +328,12 @@ def _partition_impl(ctx):
         executable = ctx.executable._staging_dir_builder,
         arguments = [
             file_mapping_file.path,
+            staging_dir.path,
             toolchain.build_image.path,
-            "STAGING_DIR_PLACEHOLDER",
+            staging_dir.path,
             image_info.path,
             output_image.path,
-            "STAGING_DIR_PLACEHOLDER",
+            staging_dir.path,
         ],
         mnemonic = "BuildPartition",
         # TODO: the /usr/bin addition is because build_image uses the du command
