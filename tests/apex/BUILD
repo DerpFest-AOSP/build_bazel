@@ -85,3 +85,53 @@ diff_test(
         "//build/bazel/platforms/arch:arm64",
     ],
 )
+
+filegroup(
+    name = "minimal_apex_java_coverage_files",
+    srcs = ["//build/bazel/examples/apex/minimal:build.bazel.examples.apex.minimal"],
+    output_group = "java_coverage_files",
+)
+
+genrule(
+    name = "minimal_apex_using_xml",
+    srcs = [":minimal_apex_java_coverage_files"],
+    outs = ["minimal_apex_using.xml"],
+    cmd = "cat $(location :minimal_apex_java_coverage_files) | sort > $@",
+)
+
+diff_test(
+    name = "minimal_apex_java_symbols_used_by_apex_diff_test",
+    file1 = ":minimal_apex_using.xml",
+    file2 = ":minimal_apex_using.xml.golden",
+    target_compatible_with = [
+        "//build/bazel/platforms/os:android",
+        "//build/bazel/platforms/arch:arm64",
+    ],
+)
+
+filegroup(
+    name = "com.android.adbd_backing_libs",
+    srcs = ["//packages/modules/adb/apex:com.android.adbd"],
+    output_group = "backing_libs",
+)
+
+diff_test(
+    name = "com.android.adbd_backing_libs_diff_test",
+    file1 = ":com.android.adbd_backing_libs",
+    file2 = "com.android.adbd_backing.txt.golden",
+    target_compatible_with = ["//build/bazel/platforms/os:linux"],
+)
+
+filegroup(
+    name = "com.android.adbd_installed_files",
+    srcs = ["//packages/modules/adb/apex:com.android.adbd"],
+    output_group = "installed_files",
+)
+
+# (TODO:weiwli) update the diff test to compare libs only.
+diff_test(
+    name = "com.android.adbd_installed_files_diff_test",
+    file1 = "com.android.adbd_installed-files.txt.golden",
+    file2 = "com.android.adbd_installed-files.txt.golden",
+    target_compatible_with = ["//build/bazel/platforms/arch:arm"],
+)
