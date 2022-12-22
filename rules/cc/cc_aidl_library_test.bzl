@@ -22,8 +22,8 @@ load("@bazel_skylib//lib:paths.bzl", "paths")
 
 aidl_library_label_name = "foo_aidl_library"
 aidl_files = [
-    "A.aidl",
-    "B.aidl",
+    "a/b/A.aidl",
+    "a/b/B.aidl",
 ]
 
 def _cc_aidl_code_gen_test_impl(ctx):
@@ -61,20 +61,21 @@ def _cc_aidl_code_gen_test_impl(ctx):
         ctx.genfiles_dir.path,
         ctx.label.package,
         cc_aidl_code_gen_target.label.name,
-        ctx.label.package,
-        "_virtual_imports/foo_aidl_library",
     )
     expected_outputs = []
-    for aidl_file in aidl_files:
-        basename_without_ext = paths.replace_extension(aidl_file, "")
-        expected_outputs.extend(
-            [
-                paths.join(output_path, "Bp" + basename_without_ext + ".h"),
-                paths.join(output_path, "Bn" + basename_without_ext + ".h"),
-                paths.join(output_path, basename_without_ext + ".h"),
-                paths.join(output_path, basename_without_ext + ".cpp"),
-            ],
-        )
+    expected_outputs.extend(
+        [
+            paths.join(output_path, "a/b/BpA.h"),
+            paths.join(output_path, "a/b/BnA.h"),
+            paths.join(output_path, "a/b/A.h"),
+            paths.join(output_path, "a/b/A.cpp"),
+            paths.join(output_path, "a/b/BpB.h"),
+            paths.join(output_path, "a/b/BnB.h"),
+            paths.join(output_path, "a/b/B.h"),
+            paths.join(output_path, "a/b/B.cpp"),
+        ],
+    )
+
     asserts.set_equals(
         env,
         sets.make(expected_outputs),

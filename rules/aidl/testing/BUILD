@@ -16,10 +16,8 @@ limitations under the License.
 
 load("//build/bazel/rules/aidl:interface.bzl", "aidl_interface")
 load("//build/bazel/rules/aidl:library.bzl", "aidl_library")
-load("//build/bazel/rules:gensrcs.bzl", "gensrcs")
 
 test_scope = [
-    "//build/bazel/rules/aidl/testing:aidl_interface_test",
     "//build/bazel/rules/aidl/testing:aidl_interface_test-java",
     "//build/bazel/rules/aidl/testing:aidl_interface_test-V1",
     "//build/bazel/rules/aidl/testing:aidl_interface_test-V1-java",
@@ -37,6 +35,9 @@ aidl_library(
 
 aidl_interface(
     name = "aidl_interface_test",
+    java_config = {
+        "enabled": True,
+    },
     tags = ["manual"],
     versions = [
         "1",
@@ -69,6 +70,7 @@ sh_test(
         "manual",
         "no_windows",
     ],
+    visibility = ["//build/bazel/rules/aidl:__subpackages__"],
     deps = ["@bazel_tools//tools/bash/runfiles"],
 )
 
@@ -87,12 +89,6 @@ genquery(
 genquery(
     name = "aidl_library_latest_produced_by_default_query",
     expression = "kind(alias, //build/bazel/rules/aidl/testing:aidl_interface_test-latest)",
-    scope = test_scope,
-)
-
-genquery(
-    name = "aidl_library_unversioned_produced_by_default_query",
-    expression = "kind(alias, //build/bazel/rules/aidl/testing:aidl_interface_test)",
     scope = test_scope,
 )
 
@@ -128,15 +124,14 @@ sh_test(
         ":aidl_library_V1_produced_by_default_query",
         ":aidl_library_V2_produced_by_default_query",
         ":aidl_library_latest_produced_by_default_query",
-        ":aidl_library_unversioned_produced_by_default_query",
         ":java_backend_V1_produced_by_default_query",
         ":java_backend_V2_produced_by_default_query",
         ":java_backend_latest_produced_by_default_query",
-        ":java_backend_unversioned_produced_by_default_query",
     ],
     tags = [
         "manual",
         "no_windows",
     ],
+    visibility = ["//build/bazel/rules/aidl:__subpackages__"],
     deps = ["@bazel_tools//tools/bash/runfiles"],
 )

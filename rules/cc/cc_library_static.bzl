@@ -16,12 +16,17 @@ limitations under the License.
 
 load(
     ":cc_library_common.bzl",
+    "CPP_EXTENSIONS",
+    "C_EXTENSIONS",
     "create_ccinfo_for_includes",
+    "get_non_header_srcs",
     "is_external_directory",
     "parse_sdk_version",
     "system_dynamic_deps_defaults",
 )
-load(":stl.bzl", "stl_deps")
+load(":stl.bzl", "stl_info_from_attr")
+load(":clang_tidy.bzl", "ClangTidyInfo", "generate_clang_tidy_actions")
+load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load("@bazel_skylib//lib:collections.bzl", "collections")
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
 load("//build/bazel/product_variables:constants.bzl", "constants")
@@ -62,14 +67,20 @@ def cc_library_static(
         srcs_as = [],
         asflags = [],
         features = [],
+        linkopts = [],
         alwayslink = None,
         target_compatible_with = [],
         # TODO(b/202299295): Handle data attribute.
         data = [],
         sdk_version = "",
         min_sdk_version = "",
-        use_version_lib = False,
-        tags = []):
+        tags = [],
+        tidy = None,
+        tidy_checks = None,
+        tidy_checks_as_errors = None,
+        tidy_flags = None,
+        tidy_disabled_srcs = None,
+        tidy_timeout_srcs = None):
     "Bazel macro to correspond with the cc_library_static Soong module."
 
     exports_name = "%s_exports" % name
@@ -92,10 +103,6 @@ def cc_library_static(
             "-external_compiler_flags",
         ]
 
-    if use_version_lib:
-        libbuildversionLabel = "//build/soong/cc/libbuildversion:libbuildversion"
-        whole_archive_deps = whole_archive_deps + [libbuildversionLabel]
-
     if rtti:
         toolchain_features += ["rtti"]
     if not use_libcrt:
@@ -106,10 +113,7 @@ def cc_library_static(
         toolchain_features += [c_std, "-c_std_default"]
 
     if min_sdk_version:
-        toolchain_features += [
-            "sdk_version_" + parse_sdk_version(min_sdk_version),
-            "-sdk_version_default",
-        ]
+        toolchain_features += parse_sdk_version(min_sdk_version) + ["-sdk_version_default"]
 
     if system_dynamic_deps == None:
         system_dynamic_deps = system_dynamic_deps_defaults
@@ -125,13 +129,22 @@ def cc_library_static(
         tags = ["manual"],
     )
 
-    stl = stl_deps(stl, False)
+    stl_info = stl_info_from_attr(stl, False)
+    linkopts = linkopts + stl_info.linkopts
+    copts = copts + stl_info.cppflags
 
     _cc_includes(
         name = locals_name,
         includes = local_includes,
         absolute_includes = absolute_includes,
-        deps = implementation_deps + implementation_dynamic_deps + system_dynamic_deps + stl.static + stl.shared + implementation_whole_archive_deps,
+        deps = (
+            implementation_deps +
+            implementation_dynamic_deps +
+            system_dynamic_deps +
+            stl_info.static_deps +
+            stl_info.shared_deps +
+            implementation_whole_archive_deps
+        ),
         target_compatible_with = target_compatible_with,
         tags = ["manual"],
     )
@@ -145,12 +158,13 @@ def cc_library_static(
             ("hdrs", hdrs),
             # Add dynamic_deps to implementation_deps, as the include paths from the
             # dynamic_deps are also needed.
-            ("deps", [locals_name]),
-            ("interface_deps", [exports_name]),
+            ("implementation_deps", [locals_name]),
+            ("deps", [exports_name]),
             ("features", toolchain_features),
             ("toolchains", ["//build/bazel/platforms:android_target_product_vars"]),
             ("alwayslink", alwayslink),
             ("target_compatible_with", target_compatible_with),
+            ("linkopts", linkopts),
         ],
     )
 
@@ -189,11 +203,83 @@ def cc_library_static(
     # Root target to handle combining of the providers of the language-specific targets.
     _cc_library_combiner(
         name = name,
-        deps = [cpp_name, c_name, asm_name] + whole_archive_deps + implementation_whole_archive_deps,
+        roots = [cpp_name, c_name, asm_name],
+        deps = whole_archive_deps + implementation_whole_archive_deps,
         runtime_deps = runtime_deps,
         target_compatible_with = target_compatible_with,
+        alwayslink = alwayslink,
         tags = tags,
+        features = toolchain_features,
+        tidy = tidy,
+        srcs_cpp = srcs,
+        srcs_c = srcs_c,
+        copts_cpp = copts + cppflags,
+        copts_c = copts + conlyflags,
+        hdrs = hdrs,
+        includes = [locals_name, exports_name],
+        tidy_flags = tidy_flags,
+        tidy_checks = tidy_checks,
+        tidy_checks_as_errors = tidy_checks_as_errors,
+        tidy_disabled_srcs = tidy_disabled_srcs,
+        tidy_timeout_srcs = tidy_timeout_srcs,
     )
+
+def _generate_tidy_actions(ctx):
+    with_tidy = ctx.attr._with_tidy[BuildSettingInfo].value
+    allow_local_tidy_true = ctx.attr._allow_local_tidy_true[BuildSettingInfo].value
+    if not with_tidy and not (allow_local_tidy_true and ctx.attr.tidy):
+        return []
+
+    disabled_srcs = [] + ctx.files.tidy_disabled_srcs
+    tidy_timeout = ctx.attr._tidy_timeout[BuildSettingInfo].value
+    if tidy_timeout != "":
+        disabled_srcs.extend(ctx.attr.tidy_timeout_srcs)
+
+    cpp_srcs, cpp_hdrs = get_non_header_srcs(
+        ctx.files.srcs_cpp,
+        ctx.files.tidy_disabled_srcs,
+        source_extensions = CPP_EXTENSIONS,
+    )
+    c_srcs, c_hdrs = get_non_header_srcs(
+        ctx.files.srcs_cpp + ctx.files.srcs_c,
+        ctx.files.tidy_disabled_srcs,
+        source_extensions = C_EXTENSIONS,
+    )
+    hdrs = ctx.attr.hdrs + cpp_hdrs + c_hdrs
+    cpp_tidy_outs = generate_clang_tidy_actions(
+        ctx,
+        ctx.attr.copts_cpp,
+        ctx.attr.deps + ctx.attr.includes,
+        cpp_srcs,
+        hdrs,
+        "c++",
+        ctx.attr.tidy_flags,
+        ctx.attr.tidy_checks,
+        ctx.attr.tidy_checks_as_errors,
+        tidy_timeout,
+    )
+    c_tidy_outs = generate_clang_tidy_actions(
+        ctx,
+        ctx.attr.copts_c,
+        ctx.attr.deps + ctx.attr.includes,
+        c_srcs,
+        hdrs,
+        "c",
+        ctx.attr.tidy_flags,
+        ctx.attr.tidy_checks,
+        ctx.attr.tidy_checks_as_errors,
+        tidy_timeout,
+    )
+
+    tidy_files = depset(cpp_tidy_outs + c_tidy_outs)
+    return [
+        OutputGroupInfo(
+            _validation = tidy_files,
+        ),
+        ClangTidyInfo(
+            tidy_files = tidy_files,
+        ),
+    ]
 
 # Returns a CcInfo object which combines one or more CcInfo objects, except that all
 # linker inputs owned by  owners in `old_owner_labels` are relinked and owned by the current target.
@@ -204,9 +290,15 @@ def cc_library_static(
 def _cc_library_combiner_impl(ctx):
     old_owner_labels = []
     cc_infos = []
-    for dep in ctx.attr.deps:
+    for dep in ctx.attr.roots:
         old_owner_labels.append(dep.label)
         cc_infos.append(dep[CcInfo])
+    for dep in ctx.attr.deps:
+        old_owner_labels.append(dep.label)
+        cc_info = dep[CcInfo]
+
+        # do not propagate includes, hdrs, etc, already handled by roots
+        cc_infos.append(CcInfo(linking_context = cc_info.linking_context))
     combined_info = cc_common.merge_cc_infos(cc_infos = cc_infos)
 
     objects_to_link = []
@@ -242,6 +334,7 @@ def _cc_library_combiner_impl(ctx):
                 cc_toolchain = cc_toolchain,
                 static_library = output_file,
                 objects = objects_to_link,
+                alwayslink = ctx.attr.alwayslink,
             ),
         ]),
     )
@@ -278,11 +371,15 @@ def _cc_library_combiner_impl(ctx):
         ),
         outputs = [output_file],
     )
-    return [
+
+    providers = [
         DefaultInfo(files = depset(direct = [output_file]), data_runfiles = ctx.runfiles(files = [output_file])),
         CcInfo(compilation_context = combined_info.compilation_context, linking_context = linking_context),
         CcStaticLibraryInfo(root_static_archive = output_file, objects = objects_to_link),
     ]
+    providers.extend(_generate_tidy_actions(ctx))
+
+    return providers
 
 # A rule which combines objects of oen or more cc_library targets into a single
 # static linker input. This outputs a single archive file combining the objects
@@ -296,6 +393,7 @@ def _cc_library_combiner_impl(ctx):
 _cc_library_combiner = rule(
     implementation = _cc_library_combiner_impl,
     attrs = {
+        "roots": attr.label_list(providers = [CcInfo]),
         "deps": attr.label_list(providers = [CcInfo]),
         "runtime_deps": attr.label_list(
             providers = [CcInfo],
@@ -304,6 +402,62 @@ _cc_library_combiner = rule(
         "_cc_toolchain": attr.label(
             default = Label("@local_config_cc//:toolchain"),
             providers = [cc_common.CcToolchainInfo],
+        ),
+        "alwayslink": attr.bool(
+            doc = """At link time, whether these libraries should be wrapped in
+            the --whole_archive block. This causes all libraries in the static
+            archive to be unconditionally linked, regardless of whether the
+            symbols in these object files are being searched by the linker.""",
+            default = False,
+        ),
+
+        # Clang-tidy attributes
+        "tidy": attr.bool(),
+        "srcs_cpp": attr.label_list(allow_files = True),
+        "srcs_c": attr.label_list(allow_files = True),
+        "copts_cpp": attr.string_list(),
+        "copts_c": attr.string_list(),
+        "hdrs": attr.label_list(allow_files = True),
+        "includes": attr.label_list(),
+        "tidy_checks": attr.string_list(),
+        "tidy_checks_as_errors": attr.string_list(),
+        "tidy_flags": attr.string_list(),
+        "tidy_disabled_srcs": attr.label_list(allow_files = True),
+        "tidy_timeout_srcs": attr.label_list(allow_files = True),
+        "_clang_tidy_sh": attr.label(
+            default = Label("@//prebuilts/clang/host/linux-x86:clang-tidy.sh"),
+            allow_single_file = True,
+            executable = True,
+            cfg = "exec",
+            doc = "The clang tidy shell wrapper",
+        ),
+        "_clang_tidy": attr.label(
+            default = Label("@//prebuilts/clang/host/linux-x86:clang-tidy"),
+            allow_single_file = True,
+            executable = True,
+            cfg = "exec",
+            doc = "The clang tidy executable",
+        ),
+        "_clang_tidy_real": attr.label(
+            default = Label("@//prebuilts/clang/host/linux-x86:clang-tidy.real"),
+            allow_single_file = True,
+            executable = True,
+            cfg = "exec",
+        ),
+        "_with_tidy": attr.label(
+            default = "//build/bazel/flags/cc/tidy:with_tidy",
+        ),
+        "_allow_local_tidy_true": attr.label(
+            default = "//build/bazel/flags/cc/tidy:allow_local_tidy_true",
+        ),
+        "_with_tidy_flags": attr.label(
+            default = "//build/bazel/flags/cc/tidy:with_tidy_flags",
+        ),
+        "_default_tidy_header_dirs": attr.label(
+            default = "//build/bazel/flags/cc/tidy:default_tidy_header_dirs",
+        ),
+        "_tidy_timeout": attr.label(
+            default = "//build/bazel/flags/cc/tidy:tidy_timeout",
         ),
     },
     toolchains = ["@bazel_tools//tools/cpp:toolchain_type"],

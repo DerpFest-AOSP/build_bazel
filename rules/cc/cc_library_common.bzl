@@ -46,6 +46,18 @@ system_static_deps_defaults = select({
     "//conditions:default": [],
 })
 
+future_version = "10000"
+
+def _create_sdk_version_features_map():
+    version_feature_map = {}
+    for api in api_levels.values():
+        version_feature_map["//build/bazel/rules/apex:min_sdk_version_" + str(api)] = ["sdk_version_" + str(api)]
+    version_feature_map["//conditions:default"] = ["sdk_version_" + future_version]
+
+    return version_feature_map
+
+sdk_version_features = select(_create_sdk_version_features_map())
+
 def add_lists_defaulting_to_none(*args):
     """Adds multiple lists, but is well behaved with a `None` default."""
     combined = None
@@ -134,18 +146,19 @@ def is_external_directory(package_name):
 # TODO: Move this to a common rule dir, instead of a cc rule dir. Nothing here
 # should be cc specific, except that the current callers are (only) cc rules.
 def parse_sdk_version(version):
-    future_version = "10000"
+    if version == "apex_inherit":
+        # use the version determined by the transition value.
+        return sdk_version_features
 
+    return ["sdk_version_" + parse_apex_sdk_version(version)]
+
+def parse_apex_sdk_version(version):
     if version == "" or version == "current":
         return future_version
     elif version.isdigit() and int(version) in api_levels.values():
         return version
     elif version in api_levels.keys():
         return str(api_levels[version])
-        # We need to handle this case properly later
-
-    elif version == "apex_inherit":
-        return future_version
     elif version.isdigit() and int(version) == product_vars["Platform_sdk_version"]:
         # For internal branch states, support parsing a finalized version number
         # that's also still in
@@ -161,5 +174,35 @@ def parse_sdk_version(version):
         # See also b/234321488#comment2
         return version
     else:
-        fail("Unknown sdk version: %s, could not be parsed as " +
-             "an integer and/or is not a recognized codename" % (version))
+        fail("Unknown sdk version: %s, could not be parsed as " % version +
+             "an integer and/or is not a recognized codename. Valid api levels are:" +
+             str(api_levels))
+
+CPP_EXTENSIONS = ["cc", "cpp", "c++"]
+
+C_EXTENSIONS = ["c"]
+
+_HEADER_EXTENSIONS = ["h", "hh", "hpp", "hxx", "h++", "inl", "inc", "ipp", "h.generic"]
+
+def get_non_header_srcs(input_srcs, exclude_srcs, source_extensions = None, header_extensions = _HEADER_EXTENSIONS):
+    """get_non_header_srcs returns a list of srcs that do not have header extensions and aren't in the exclude srcs list
+
+    Args:
+        input_srcs (list[File]): list of files to filter
+        exclude_srcs (list[File]): list of files that should be excluded from the returned list
+        source_extensions (list[str]): list of extensions that designate sources.
+            If None, all extensions are valid. Otherwise only source with these extensions are returned
+        header_extensions (list[str]): list of extensions that designate headers
+    Returns:
+        srcs, hdrs (list[File], list[File]): tuple of lists of files; srcs have non-header extension and are not excluded,
+            and hdrs are files with header extensions
+    """
+    srcs = []
+    hdrs = []
+    for s in input_srcs:
+        is_source = not source_extensions or s.extension in source_extensions
+        if s.extension in header_extensions:
+            hdrs.append(s)
+        elif is_source and s not in exclude_srcs:
+            srcs.append(s)
+    return srcs, hdrs

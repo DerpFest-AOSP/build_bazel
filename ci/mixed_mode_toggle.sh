@@ -14,7 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Verifies mixed builds runs iff USE_BAZEL_ANALYSIS=1 is set.
+# Verifies mixed builds does not run if neither --bazel-mode-dev nor --bazel-mode
+# is set.
 # This verification script is designed to be used for continuous integration
 # tests, though may also be used for manual developer verification.
 
@@ -43,9 +44,11 @@ if [[ ! $(grep -L "bazel-out" ${OUT_DIR}/soong/build.ninja) ]]; then
 fi
 
 # Regen ninja file with mixed builds flag.
+# TODO(b/254572169): Remove DISABLE_ARTIFACT_PATH_REQUIREMENT before launching --bazel-mode.
 build/soong/soong_ui.bash --make-mode \
   --mk-metrics \
-  USE_BAZEL_ANALYSIS=1 \
+  --bazel-mode-dev \
+  DISABLE_ARTIFACT_PATH_REQUIREMENTS=true \
   BAZEL_STARTUP_ARGS="--max_idle_secs=5" \
   BAZEL_BUILD_ARGS="--color=no --curses=no --show_progress_rate_limit=5" \
   TARGET_PRODUCT=aosp_arm64 \
@@ -71,5 +74,42 @@ build/soong/soong_ui.bash --make-mode \
 
 if [[ ! $(grep -L "bazel-out" ${OUT_DIR}/soong/build.ninja) ]]; then
   echo "Expected second legacy build to not reference bazel-out"
+  exit 1
+fi
+
+# Regenerate the ninja file with mixed builds prod mode flag.
+# TODO(cparsons): Enable this test when the prod allowlist is non-empty.
+#build/soong/soong_ui.bash --make-mode \
+#  --mk-metrics \
+#  --bazel-mode \
+#  DISABLE_ARTIFACT_PATH_REQUIREMENTS=true \
+#  BAZEL_STARTUP_ARGS="--max_idle_secs=5" \
+#  BAZEL_BUILD_ARGS="--color=no --curses=no --show_progress_rate_limit=5" \
+#  TARGET_PRODUCT=aosp_arm64 \
+#  TARGET_BUILD_VARIANT=userdebug \
+#  nothing \
+#  dist DIST_DIR=$DIST_DIR
+#
+#if [[ $(grep -L "bazel-out" ${OUT_DIR}/soong/build.ninja) ]]; then
+#  echo "Expected prod mode ninja file to reference bazel-out"
+#  exit 1
+#fi
+
+# Regenerate the ninja file with mixed builds flag but BUILD_BROKEN
+# override. This should have mixed builds disabled.
+build/soong/soong_ui.bash --make-mode \
+  --mk-metrics \
+  --bazel-mode \
+  DISABLE_ARTIFACT_PATH_REQUIREMENTS=true \
+  BUILD_BROKEN_DISABLE_BAZEL=true \
+  BAZEL_STARTUP_ARGS="--max_idle_secs=5" \
+  BAZEL_BUILD_ARGS="--color=no --curses=no --show_progress_rate_limit=5" \
+  TARGET_PRODUCT=aosp_arm64 \
+  TARGET_BUILD_VARIANT=userdebug \
+  nothing \
+  dist DIST_DIR=$DIST_DIR
+
+if [[ ! $(grep -L "bazel-out" ${OUT_DIR}/soong/build.ninja) ]]; then
+  echo "Expected BUILD_BROKEN override to not reference bazel-out"
   exit 1
 fi

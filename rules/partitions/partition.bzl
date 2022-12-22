@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+load("//build/bazel/platforms:transitions.bzl", "default_android_transition")
 load("@bazel_skylib//lib:dicts.bzl", "dicts")
 load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@product_config//:product_config.bzl", "product_config")
@@ -258,8 +259,6 @@ def _generate_image_prop_dictionary(ctx, image_types, extra_props = {}):
     #         image_props["avb_system_dlkm_rollback_index_location"] = _p("BOARD_SYSTEM_SYSTEM_DLKM_ROLLBACK_INDEX_LOCATION")
     if _p("BOARD_USES_RECOVERY_AS_BOOT") == "true":
         image_props["recovery_as_boot"] = "true"
-    if _p("BOARD_BUILD_SYSTEM_ROOT_IMAGE") == "true":
-        image_props["system_root_image"] = "true"
     if _p("BOARD_BUILD_GKI_BOOT_IMAGE_WITHOUT_RAMDISK") == "true":
         image_props["gki_boot_image_without_ramdisk"] = "true"
 
@@ -304,14 +303,16 @@ def _partition_impl(ctx):
     for dep in ctx.attr.deps:
         files.update(dep[InstallableInfo].files)
 
-    for v in files.values():
+    for v in files.keys():
         if not v.startswith("/system"):
             fail("Files outside of /system are not currently supported: %s", v)
 
     file_mapping_file = ctx.actions.declare_file(ctx.attr.name + "/partition_file_mapping.json")
 
     # It seems build_image will prepend /system to the paths when building_system_image=true
-    ctx.actions.write(file_mapping_file, json.encode({k.path: v.removeprefix("/system") for k, v in files.items()}))
+    ctx.actions.write(file_mapping_file, json.encode({k.removeprefix("/system"): v.path for k, v in files.items()}))
+
+    staging_dir = ctx.actions.declare_directory(ctx.attr.name + "_staging_dir")
 
     ctx.actions.run(
         inputs = [
@@ -327,11 +328,12 @@ def _partition_impl(ctx):
         executable = ctx.executable._staging_dir_builder,
         arguments = [
             file_mapping_file.path,
+            staging_dir.path,
             toolchain.build_image.path,
-            "STAGING_DIR_PLACEHOLDER",
+            staging_dir.path,
             image_info.path,
             output_image.path,
-            "STAGING_DIR_PLACEHOLDER",
+            staging_dir.path,
         ],
         mnemonic = "BuildPartition",
         # TODO: the /usr/bin addition is because build_image uses the du command
@@ -344,6 +346,7 @@ def _partition_impl(ctx):
 
 partition = rule(
     implementation = _partition_impl,
+    cfg = default_android_transition,
     attrs = {
         "type": attr.string(
             mandatory = True,
@@ -359,6 +362,7 @@ partition = rule(
             executable = True,
             default = "//build/bazel/rules:staging_dir_builder",
         ),
+        "_allowlist_function_transition": attr.label(default = "@bazel_tools//tools/allowlists/function_transition_allowlist"),
     },
     toolchains = [
         ":partition_toolchain_type",

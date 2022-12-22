@@ -35,12 +35,26 @@ def _make_json_variation(mutator, variation):
   }
 
 
-def _make_json_module(name, typ, deps, variations=None):
+def _make_json_module(name, typ, deps = [], variations=None, created_by = "", json_props=[]):
   return {
       'Name': name,
       'Type': typ,
+      "CreatedBy": created_by,
       'Deps': deps,
       'Variations': variations,
+      'Module': {
+          'Android': {
+              'SetProperties': json_props,
+          },
+      },
+  }
+
+
+def make_json_property(name, value="", values=None):
+  return {
+      'Name': name,
+      'Value': value,
+      'Values': values,
   }
 
 
@@ -87,6 +101,10 @@ class DependencyAnalysisTest(unittest.TestCase):
 
   def test_visit_json_module_graph_post_order_visits_all_in_post_order(self):
     graph = [
+        _make_json_module('q', 'module', [
+            _make_json_dep('a'),
+            _make_json_dep('b'),
+        ]),
         _make_json_module('a', 'module', [
             _make_json_dep('b'),
             _make_json_dep('c'),
@@ -307,6 +325,76 @@ class DependencyAnalysisTest(unittest.TestCase):
     expected_visited = ['d', 'b', 'a', 'e', 'c', 'a']
     self.assertListEqual(visited_modules, expected_visited)
 
+  def test_visit_json_module_skips_filegroup_with_src_same_as_name(self):
+    graph = [
+        _make_json_module(
+            'a',
+            'filegroup',
+            [
+                _make_json_dep('b'),
+            ],
+            json_props=[
+                make_json_property(
+                    name='Srcs',
+                    values=['other_file'],
+                ),
+            ],
+        ),
+        _make_json_module(
+            'b',
+            'filegroup',
+            json_props=[
+                make_json_property(
+                    name='Srcs',
+                    values=['b'],
+                ),
+            ],
+        ),
+    ]
+
+    def only_a(json):
+      return json['Name'] == 'a'
+
+    visited_modules = []
+
+    def visit(module, _):
+      visited_modules.append(module['Name'])
+
+    dependency_analysis.visit_json_module_graph_post_order(
+        graph, set(), only_a, visit)
+
+    expected_visited = ['a']
+    self.assertListEqual(visited_modules, expected_visited)
+
+  def test_visit_json_module_graph_post_order_include_created_by(
+      self):
+    graph = [
+        _make_json_module('a', 'module', [
+            _make_json_dep('b'),
+            _make_json_dep('c'),
+        ]),
+        _make_json_module('b', 'module', created_by='d'),
+        _make_json_module('c', 'module', [
+            _make_json_dep('e'),
+        ]),
+        _make_json_module('d', 'module', []),
+        _make_json_module('e', 'module', []),
+    ]
+
+    def only_a(json):
+      return json['Name'] == 'a'
+
+    visited_modules = []
+
+    def visit(module, _):
+      visited_modules.append(module['Name'])
+
+    dependency_analysis.visit_json_module_graph_post_order(
+        graph, set(), only_a, visit)
+
+    expected_visited = ['d', 'b', 'e', 'c', 'a']
+    self.assertListEqual(visited_modules, expected_visited)
+
   def test_visit_queryview_xml_module_graph_post_order_visits_all(self):
     graph = ElementTree.Element('query', attrib={'version': '2'})
     graph.append(
@@ -513,6 +601,39 @@ class DependencyAnalysisTest(unittest.TestCase):
         graph, set(), only_a, visit)
 
     expected_visited = ['d', 'b', 'b', 'e', 'c', 'a']
+    self.assertListEqual(visited_modules, expected_visited)
+
+  def test_visit_queryview_xml_module_graph_post_order_skips_prebuilt_with_same_name(
+      self):
+    graph = ElementTree.Element('query', attrib={'version': '2'})
+    graph.append(
+        _make_xml_module(
+            '//pkg:a',
+            'a',
+            'module',
+            dep_names=['//other_pkg:prebuilt_a', '//pkg:b', '//pkg:c']))
+    graph.append(
+        _make_xml_module('//other_pkg:prebuilt_a', 'prebuilt_a',
+                         'prebuilt_module'))
+    graph.append(
+        _make_xml_module('//pkg:b', 'b', 'module', dep_names=['//pkg:d']))
+    graph.append(
+        _make_xml_module('//pkg:c', 'c', 'module', dep_names=['//pkg:e']))
+    graph.append(_make_xml_module('//pkg:d', 'd', 'module'))
+    graph.append(_make_xml_module('//pkg:e', 'e', 'module'))
+
+    def only_a(module):
+      return module.name == 'a'
+
+    visited_modules = []
+
+    def visit(module, _):
+      visited_modules.append(module.name)
+
+    dependency_analysis.visit_queryview_xml_module_graph_post_order(
+        graph, set(), only_a, visit)
+
+    expected_visited = ['d', 'b', 'e', 'c', 'a']
     self.assertListEqual(visited_modules, expected_visited)
 
 
