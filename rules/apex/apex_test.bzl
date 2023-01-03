@@ -1201,7 +1201,7 @@ def _feature_check_aspect_impl(target, ctx):
     elif ctx.rule.kind in rules_propagate_src and hasattr(ctx.rule.attr, "src"):
         argv = ctx.rule.attr.src[ActionArgsInfo].argv
     elif ctx.rule.kind == "_cc_library_shared_proxy" and hasattr(ctx.rule.attr, "shared"):
-        argv = ctx.rule.attr.shared[ActionArgsInfo].argv
+        argv = ctx.rule.attr.shared[0][ActionArgsInfo].argv
     elif ctx.rule.kind == "_apex" and hasattr(ctx.rule.attr, "native_shared_libs_32"):
         argv = ctx.rule.attr.native_shared_libs_32[0][ActionArgsInfo].argv
 
@@ -1606,6 +1606,99 @@ def _test_apex_generate_notice_file():
     apex_generate_notice_file_test(name = test_name, target_under_test = name)
     return test_name
 
+def _analysis_success_test(ctx):
+    env = analysistest.begin(ctx)
+
+    # An empty analysis test that just ensures the target_under_test can be analyzed.
+    return analysistest.end(env)
+
+analysis_success_test = analysistest.make(_analysis_success_test)
+
+def _test_apex_available():
+    name = "apex_available"
+    test_name = name + "_test"
+
+    cc_library_shared(
+        name = name + "_lib_cc",
+        srcs = [name + "_lib.cc"],
+        tags = [
+            "manual",
+            "apex_available_checked_manual_for_testing",
+            # Explicit name.
+            "apex_available=" + name,
+        ],
+    )
+
+    cc_library_shared(
+        name = name + "_lib2_cc",
+        srcs = [name + "_lib2.cc"],
+        tags = [
+            "manual",
+            "apex_available_checked_manual_for_testing",
+            # anyapex.
+            "apex_available=//apex_available:anyapex",
+        ],
+    )
+
+    test_apex(
+        name = name,
+        native_shared_libs_32 = [
+            name + "_lib_cc",
+            name + "_lib2_cc",
+        ],
+        android_manifest = "AndroidManifest.xml",
+    )
+
+    analysis_success_test(
+        name = test_name,
+        target_under_test = name,
+    )
+
+    return test_name
+
+def _test_apex_available_with_base_apex():
+    name = "apex_available_with_base_apex"
+    test_name = name + "_test"
+
+    cc_library_shared(
+        name = name + "_lib_cc",
+        srcs = [name + "_lib.cc"],
+        tags = [
+            "manual",
+            "apex_available_checked_manual_for_testing",
+            # Explicit name.
+            "apex_available=" + name + "_base",
+        ],
+    )
+
+    cc_library_shared(
+        name = name + "_lib2_cc",
+        srcs = [name + "_lib2.cc"],
+        tags = [
+            "manual",
+            "apex_available_checked_manual_for_testing",
+            # anyapex.
+            "apex_available=//apex_available:anyapex",
+        ],
+    )
+
+    test_apex(
+        name = name,
+        native_shared_libs_32 = [
+            name + "_lib_cc",
+            name + "_lib2_cc",
+        ],
+        base_apex_name = name + "_base",
+        android_manifest = "AndroidManifest.xml",
+    )
+
+    analysis_success_test(
+        name = test_name,
+        target_under_test = name,
+    )
+
+    return test_name
+
 def apex_test_suite(name):
     native.test_suite(
         name = name,
@@ -1644,5 +1737,7 @@ def apex_test_suite(name):
             _test_apex_installed_files(),
             _test_apex_java_symbols_used_by_apex(),
             _test_apex_generate_notice_file(),
+            _test_apex_available(),
+            _test_apex_available_with_base_apex(),
         ],
     )

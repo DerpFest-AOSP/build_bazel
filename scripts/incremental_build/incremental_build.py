@@ -178,8 +178,14 @@ def main():
       logging.info(' DONE %s', desc)
 
   summary_cmd = util.get_summary_cmd(user_input.log_dir)
-  subprocess.run(summary_cmd, shell=True)
-  logging.info('TIP: ' + summary_cmd)
+  output = subprocess.check_output(summary_cmd, shell=True, text=True)
+  logging.info(textwrap.dedent(f'''
+  %s
+  TIPS:
+  1 To view key metrics in summary.csv:
+    %s
+  2 To view column headers:
+    %s'''), output, summary_cmd, util.get_csv_columns_cmd(user_input.log_dir))
 
 
 if __name__ == '__main__':
