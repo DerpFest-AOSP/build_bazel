@@ -18,14 +18,22 @@ load(
     ":cc_library_common.bzl",
     "add_lists_defaulting_to_none",
     "disable_crt_link",
+    "get_sanitizer_lib_info",
     "parse_sdk_version",
+    "sanitizer_deps",
     "system_dynamic_deps_defaults",
 )
 load(":cc_library_static.bzl", "cc_library_static")
+load(
+    ":fdo_profile_transitions.bzl",
+    "FDO_PROFILE_ATTR",
+    "fdo_profile_transition",
+)
 load(":generate_toc.bzl", "shared_library_toc", _CcTocInfo = "CcTocInfo")
 load(":stl.bzl", "stl_info_from_attr")
 load(":stripped_cc_common.bzl", "CcUnstrippedInfo", "stripped_shared_library")
 load(":versioned_cc_common.bzl", "versioned_shared_library")
+load("//build/bazel/rules/abi:abi_dump.bzl", "AbiDiffInfo", "abi_dump")
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
 
 CcTocInfo = _CcTocInfo
@@ -74,10 +82,18 @@ def cc_library_shared(
         data = [],
         use_version_lib = False,
         has_stubs = False,
+        stubs_symbol_file = None,
         inject_bssl_hash = False,
         sdk_version = "",
         min_sdk_version = "",
+        abi_checker_enabled = None,
+        abi_checker_symbol_file = None,
+        abi_checker_exclude_symbol_versions = [],
+        abi_checker_exclude_symbol_tags = [],
+        abi_checker_check_all_apis = False,
+        abi_checker_diff_flags = [],
         tags = [],
+        fdo_profile = None,
         **kwargs):
     "Bazel macro to correspond with the cc_library_shared Soong module."
 
@@ -99,6 +115,24 @@ def cc_library_shared(
 
     if min_sdk_version:
         features = features + parse_sdk_version(min_sdk_version) + ["-sdk_version_default"]
+
+    if fdo_profile != None:
+        # FIXME(b/261609769): This is a temporary workaround to add link flags
+        # that requires the path to fdo profile.
+        # This workaround is error-prone because it assumes all the fdo_profile
+        # targets are created in a specific way (e.g. fdo_profile target named foo
+        # uses an afdo profile file named foo.afdo in the same folder).
+        fdo_profile_path = fdo_profile + ".afdo"
+        linkopts = linkopts + [
+            "-funique-internal-linkage-names",
+            "-fprofile-sample-accurate",
+            "-fprofile-sample-use=$(location {})".format(fdo_profile_path),
+            "-Wl,-mllvm,-no-warn-sample-unused=true",
+        ]
+        if additional_linker_inputs != None:
+            additional_linker_inputs = additional_linker_inputs + [fdo_profile_path]
+        else:
+            additional_linker_inputs = [fdo_profile_path]
 
     stl_info = stl_info_from_attr(stl, True)
     linkopts = linkopts + stl_info.linkopts
@@ -148,6 +182,13 @@ def cc_library_shared(
         tags = ["manual"],
     )
 
+    sanitizer_deps_name = name + "_sanitizer_deps"
+    sanitizer_deps(
+        name = sanitizer_deps_name,
+        dep = shared_root_name,
+        tags = ["manual"],
+    )
+
     # implementation_deps and deps are to be linked into the shared library via
     # --no-whole-archive. In order to do so, they need to be dependencies of
     # a "root" of the cc_shared_library, but may not be roots themselves.
@@ -163,7 +204,8 @@ def cc_library_shared(
             stl_info.static_deps +
             implementation_dynamic_deps +
             system_dynamic_deps +
-            stl_info.shared_deps
+            stl_info.shared_deps +
+            [sanitizer_deps_name]
         ),
         target_compatible_with = target_compatible_with,
         tags = ["manual"],
@@ -233,6 +275,41 @@ def cc_library_shared(
         tags = ["manual"],
     )
 
+    # The logic here is based on the shouldCreateSourceAbiDumpForLibrary() in sabi.go
+    # abi_root is used to control if abi_dump aspects should be run on the static
+    # deps because there is no way to control the aspects directly from the rule.
+    abi_root = shared_root_name
+
+    # explicitly disabled
+    if abi_checker_enabled == False:
+        abi_root = None
+    elif abi_checker_enabled == True or has_stubs:
+        # The logic comes from here:
+        # https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/library.go;l=2288;drc=73feba33308bf9432aea43e069ed24a2f0312f1b
+        if not abi_checker_symbol_file and has_stubs and stubs_symbol_file:
+            abi_checker_symbol_file = stubs_symbol_file
+    else:
+        abi_root = None
+
+    abi_checker_explicitly_disabled = abi_checker_enabled == False
+
+    abi_dump_name = name + "_abi_dump"
+    abi_dump(
+        name = abi_dump_name,
+        shared = stripped_name,
+        root = abi_root,
+        soname = soname,
+        has_stubs = has_stubs,
+        enabled = abi_checker_enabled,
+        explicitly_disabled = abi_checker_explicitly_disabled,
+        symbol_file = abi_checker_symbol_file,
+        exclude_symbol_versions = abi_checker_exclude_symbol_versions,
+        exclude_symbol_tags = abi_checker_exclude_symbol_tags,
+        check_all_apis = abi_checker_check_all_apis,
+        diff_flags = abi_checker_diff_flags,
+        tags = ["manual"],
+    )
+
     _cc_library_shared_proxy(
         name = name,
         shared = stripped_name,
@@ -243,6 +320,8 @@ def cc_library_shared(
         target_compatible_with = target_compatible_with,
         has_stubs = has_stubs,
         runtime_deps = runtime_deps,
+        abi_dump = abi_dump_name,
+        fdo_profile = fdo_profile,
         tags = tags,
     )
 
@@ -302,19 +381,29 @@ def _cc_library_shared_proxy_impl(ctx):
     if len(ctx.attr.deps) != 1:
         fail("Exactly one 'deps' must be specified for cc_library_shared_proxy")
     root_files = ctx.attr.deps[0][DefaultInfo].files.to_list()
-    shared_files = ctx.attr.shared[DefaultInfo].files.to_list()
-    shared_debuginfo = ctx.attr.shared_debuginfo[DefaultInfo].files.to_list()
+    shared_files = ctx.attr.shared[0][DefaultInfo].files.to_list()
+    shared_debuginfo = ctx.attr.shared_debuginfo[0][DefaultInfo].files.to_list()
     if len(shared_files) != 1 or len(shared_debuginfo) != 1:
         fail("Expected only one shared library file and one debuginfo file for it")
 
     shared_lib = shared_files[0]
+    abi_diff_files = ctx.attr.abi_dump[AbiDiffInfo].diff_files.to_list()
 
     # Copy the output instead of symlinking. This is because this output
     # can be directly installed into a system image; this installation treats
     # symlinks differently from real files (symlinks will be preserved relative
     # to the image root).
     ctx.actions.run_shell(
-        inputs = depset(direct = [shared_lib]),
+        # We need to add the abi dump files to the inputs of this copy action even
+        # though they are not used, otherwise not all the abi dump files will be
+        # created. For example, for b build
+        # packages/modules/adb/pairing_connection:libadb_pairing_server, only
+        # libadb_pairing_server.so.lsdump will be created, libadb_pairing_auth.so.lsdump
+        # and libadb_pairing_connection.so.lsdump will not be. The reason is that
+        # even though libadb_pairing server depends on libadb_pairing_auth and
+        # libadb_pairing_connection, the abi dump files are not explicitly used
+        # by libadb_pairing_server, so bazel won't bother generating them.
+        inputs = depset(direct = [shared_lib] + abi_diff_files),
         outputs = [ctx.outputs.output_file],
         command = "cp -f %s %s" % (shared_lib.path, ctx.outputs.output_file.path),
         mnemonic = "CopyFile",
@@ -322,44 +411,55 @@ def _cc_library_shared_proxy_impl(ctx):
         use_default_shell_env = True,
     )
 
-    files = root_files + [ctx.outputs.output_file, ctx.files.table_of_contents[0]]
+    files = root_files + [ctx.outputs.output_file, ctx.files.table_of_contents[0]] + abi_diff_files
 
     return [
         DefaultInfo(
             files = depset(direct = files),
             runfiles = ctx.runfiles(files = [ctx.outputs.output_file]),
         ),
-        _swap_shared_linker_input(ctx, ctx.attr.shared[CcSharedLibraryInfo], ctx.outputs.output_file),
-        ctx.attr.table_of_contents[CcTocInfo],
+        _swap_shared_linker_input(ctx, ctx.attr.shared[0][CcSharedLibraryInfo], ctx.outputs.output_file),
+        ctx.attr.table_of_contents[0][CcTocInfo],
         # The _only_ linker_input is the statically linked root itself. We need to propagate this
         # as cc_shared_library identifies which libraries can be linked dynamically based on the
         # linker_inputs of the roots
         ctx.attr.deps[0][CcInfo],
         CcStubLibrariesInfo(has_stubs = ctx.attr.has_stubs),
-        ctx.attr.shared[OutputGroupInfo],
+        ctx.attr.shared[0][OutputGroupInfo],
         CcSharedLibraryOutputInfo(output_file = ctx.outputs.output_file),
         CcUnstrippedInfo(unstripped = shared_debuginfo[0]),
+        ctx.attr.abi_dump[AbiDiffInfo],
     ]
 
 _cc_library_shared_proxy = rule(
     implementation = _cc_library_shared_proxy_impl,
+    # Incoming transition to override outgoing transition from rdep
+    cfg = fdo_profile_transition,
     attrs = {
-        "shared": attr.label(mandatory = True, providers = [CcSharedLibraryInfo]),
-        "shared_debuginfo": attr.label(mandatory = True),
+        FDO_PROFILE_ATTR: attr.label(),
+        "shared": attr.label(mandatory = True, providers = [CcSharedLibraryInfo], cfg = fdo_profile_transition),
+        "shared_debuginfo": attr.label(mandatory = True, cfg = fdo_profile_transition),
         # "deps" should be a single element: the root target of the shared library.
         # See _cc_library_shared_proxy_impl comment for explanation.
-        "deps": attr.label_list(mandatory = True, providers = [CcInfo]),
+        "deps": attr.label_list(mandatory = True, providers = [CcInfo], cfg = fdo_profile_transition),
         "output_file": attr.output(mandatory = True),
         "table_of_contents": attr.label(
             mandatory = True,
             # TODO(b/217908237): reenable allow_single_file
             # allow_single_file = True,
             providers = [CcTocInfo],
+            cfg = fdo_profile_transition,
         ),
         "has_stubs": attr.bool(default = False),
+        # fdo_profile does not get propagated to runtime_deps.
+        # Hence, fdo_profile_transition does not need to get attached here
         "runtime_deps": attr.label_list(
             providers = [CcInfo],
             doc = "Deps that should be installed along with this target. Read by the apex cc aspect.",
+        ),
+        "abi_dump": attr.label(providers = [AbiDiffInfo]),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
     },
     fragments = ["cpp"],

@@ -27,14 +27,23 @@ DEFAULT_TIMING_LOGS_DIR: Final[str] = 'timing_logs'
 INDICATOR_FILE: Final[str] = 'build/soong/soong_ui.bash'
 SUMMARY_CSV: Final[str] = 'summary.csv'
 
-IMPORTANT_METRICS: list[str] = ['soong/bootstrap', 'soong_build/_.bazel',
+IMPORTANT_METRICS: list[str] = ['soong/bootstrap', 'soong_build/*.bazel',
                                 'ninja/ninja', 'bp2build/',
                                 'symlink_forest/']
 
 
+def get_csv_columns_cmd(d: Path) -> str:
+  """
+  :param d: the log directory
+  :return: a quick shell command to view columns in summary.csv
+  """
+  summary_csv = d.joinpath(SUMMARY_CSV)
+  return f'head -n 1 "{summary_csv.absolute()}" | sed "s/,/\\n/g" | nl'
+
+
 def get_summary_cmd(d: Path) -> str:
   """
-  :param d: the path to log directory
+  :param d: the log directory
   :return: a quick shell command to view some collected metrics
   """
   summary_csv = d.joinpath(SUMMARY_CSV)
