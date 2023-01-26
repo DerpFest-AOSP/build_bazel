@@ -37,8 +37,8 @@ function clean_tree() {
   rm -rf out
 }
 
-rm -rf $log_dir
-mkdir -p $log_dir
+rm -rf "$log_dir"
+mkdir -p "$log_dir"
 
 source build/envsetup.sh
 
@@ -52,15 +52,26 @@ fi
 
 export TARGET_BUILD_VARIANT=eng
 
+function build()
+{
+  date
+  set -x
+  ./build/bazel/scripts/incremental_build/incremental_build.py "$@"
+  set +x
+}
+
 function run()
 {
   local -r bazel_mode="${1:-}"
+  local -r targets=(droid)
 
   # Clear the cache by doing a build. There are probably better ways of clearing the
   # cache, but this does reduce the variance of the first full build.
   clean_tree
   date
-  m
+  file="$log_dir/output${bazel_mode:+"$bazel_mode"}.txt"
+  echo "logging to $file"
+  m "${targets[*]}"> "$file"
 
   # Droid Builds
   # ------------
@@ -69,32 +80,22 @@ function run()
   # Touch root Android.bp
   # Adding an unreferenced file to the source tree and build
   clean_tree
-  date
-  # shellcheck disable=SC2086
-  ./build/bazel/ci/incremental_build.py $bazel_mode --log-dir="$log_dir" --repo-diff-exit \
-      -c 0 0 0 "bionic/unreferenced.txt" "root Android.bp" -- droid
 
-  # Touch stdio.cpp
-  date
-  # shellcheck disable=SC2086
-  ./build/bazel/ci/incremental_build.py $bazel_mode --log-dir="$log_dir" --repo-diff-exit \
-      -c "stdio.cpp" -- libc
+  build --ignore-repo-diff --log-dir="$log_dir" ${bazel_mode:+"$bazel_mode"} \
+    -c 0 0 0 " bionic/unreferenced.txt" " Android.bp" -- "${targets[*]}"
 
-  # Touch adbd
-  date
-  # shellcheck disable=SC2086
-  ./build/bazel/ci/incremental_build.py $bazel_mode --log-dir="$log_dir" --repo-diff-exit \
-      -c "adbd main.cpp"  -- adbd
+  build --ignore-repo-diff --log-dir="$log_dir" ${bazel_mode:+"$bazel_mode"} \
+    -c stdio.cpp -- "${targets[*]}"
 
-  # Touch View.java
-  date
-  # shellcheck disable=SC2086
-  ./build/bazel/ci/incremental_build.py $bazel_mode --log-dir="$log_dir" --repo-diff-exit \
-      -c "View.java" -- framework
+  build --ignore-repo-diff --log-dir="$log_dir" ${bazel_mode:+"$bazel_mode"} \
+    -c 'adb/daemon/main.cpp$' -- "${targets[*]}"
+
+  build --ignore-repo-diff --log-dir="$log_dir" ${bazel_mode:+"$bazel_mode"} \
+    -c View.java -- "${targets[*]}"
 
   pretty "$log_dir/summary.csv"
 }
 
-run
+BUILD_BROKEN_DISABLE_BAZEL=1 run
 run --bazel-mode
-#run --bazel-mode-dev
+run --bazel-mode-staging
