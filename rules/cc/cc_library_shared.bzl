@@ -81,7 +81,6 @@ def cc_library_shared(
         # TODO(b/202299295): Handle data attribute.
         data = [],
         use_version_lib = False,
-        has_stubs = False,
         stubs_symbol_file = None,
         inject_bssl_hash = False,
         sdk_version = "",
@@ -92,8 +91,15 @@ def cc_library_shared(
         abi_checker_exclude_symbol_tags = [],
         abi_checker_check_all_apis = False,
         abi_checker_diff_flags = [],
+        native_coverage = True,
         tags = [],
         fdo_profile = None,
+        tidy = None,
+        tidy_checks = None,
+        tidy_checks_as_errors = None,
+        tidy_flags = None,
+        tidy_disabled_srcs = None,
+        tidy_timeout_srcs = None,
         **kwargs):
     "Bazel macro to correspond with the cc_library_shared Soong module."
 
@@ -138,16 +144,20 @@ def cc_library_shared(
     linkopts = linkopts + stl_info.linkopts
     copts = copts + stl_info.cppflags
 
-    features = features + select({
-        "//build/bazel/rules/cc:android_coverage_lib_flag": ["android_coverage_lib"],
-        "//conditions:default": [],
-    })
+    extra_archive_deps = []
+    if not native_coverage:
+        features = features + ["-coverage"]
+    else:
+        features = features + select({
+            "//build/bazel/rules/cc:android_coverage_lib_flag": ["android_coverage_lib"],
+            "//conditions:default": [],
+        })
 
-    # TODO(b/233660582): deal with the cases where the default lib shouldn't be used
-    implementation_deps = implementation_deps + select({
-        "//build/bazel/rules/cc:android_coverage_lib_flag": ["//system/extras/toolchain-extras:libprofile-clang-extras"],
-        "//conditions:default": [],
-    })
+        # TODO(b/233660582): deal with the cases where the default lib shouldn't be used
+        extra_archive_deps = select({
+            "//build/bazel/rules/cc:android_coverage_lib_flag": ["//system/extras/toolchain-extras:libprofile-clang-extras"],
+            "//conditions:default": [],
+        })
 
     # The static library at the root of the shared library.
     # This may be distinct from the static version of the library if e.g.
@@ -180,6 +190,13 @@ def cc_library_shared(
         features = features,
         target_compatible_with = target_compatible_with,
         tags = ["manual"],
+        native_coverage = native_coverage,
+        tidy = tidy,
+        tidy_checks = tidy_checks,
+        tidy_checks_as_errors = tidy_checks_as_errors,
+        tidy_flags = tidy_flags,
+        tidy_disabled_srcs = tidy_disabled_srcs,
+        tidy_timeout_srcs = tidy_timeout_srcs,
     )
 
     sanitizer_deps_name = name + "_sanitizer_deps"
@@ -237,7 +254,7 @@ def cc_library_shared(
         static_deps = ["//:__subpackages__"] + [shared_root_name, imp_deps_stub, deps_stub],
         dynamic_deps = shared_dynamic_deps,
         additional_linker_inputs = additional_linker_inputs,
-        roots = [shared_root_name, imp_deps_stub, deps_stub] + whole_archive_deps,
+        roots = [shared_root_name, imp_deps_stub, deps_stub] + whole_archive_deps + extra_archive_deps,
         features = features,
         target_compatible_with = target_compatible_with,
         tags = ["manual"],
@@ -283,10 +300,10 @@ def cc_library_shared(
     # explicitly disabled
     if abi_checker_enabled == False:
         abi_root = None
-    elif abi_checker_enabled == True or has_stubs:
+    elif abi_checker_enabled == True or stubs_symbol_file:
         # The logic comes from here:
         # https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/library.go;l=2288;drc=73feba33308bf9432aea43e069ed24a2f0312f1b
-        if not abi_checker_symbol_file and has_stubs and stubs_symbol_file:
+        if not abi_checker_symbol_file and stubs_symbol_file:
             abi_checker_symbol_file = stubs_symbol_file
     else:
         abi_root = None
@@ -299,7 +316,7 @@ def cc_library_shared(
         shared = stripped_name,
         root = abi_root,
         soname = soname,
-        has_stubs = has_stubs,
+        has_stubs = stubs_symbol_file != None,
         enabled = abi_checker_enabled,
         explicitly_disabled = abi_checker_explicitly_disabled,
         symbol_file = abi_checker_symbol_file,
@@ -315,19 +332,18 @@ def cc_library_shared(
         shared = stripped_name,
         shared_debuginfo = unstripped_name,
         deps = [shared_root_name],
+        features = features,
         table_of_contents = toc_name,
         output_file = soname,
         target_compatible_with = target_compatible_with,
-        has_stubs = has_stubs,
+        has_stubs = stubs_symbol_file != None,
         runtime_deps = runtime_deps,
         abi_dump = abi_dump_name,
         fdo_profile = fdo_profile,
         tags = tags,
     )
 
-def _swap_shared_linker_input(ctx, shared_info, new_output):
-    old_library_to_link = shared_info.linker_input.libraries[0]
-
+def _create_dynamic_library_linker_input_for_file(ctx, shared_info, output):
     cc_toolchain = find_cpp_toolchain(ctx)
     feature_configuration = cc_common.configure_features(
         ctx = ctx,
@@ -336,7 +352,7 @@ def _swap_shared_linker_input(ctx, shared_info, new_output):
 
     new_library_to_link = cc_common.create_library_to_link(
         actions = ctx.actions,
-        dynamic_library = new_output,
+        dynamic_library = output,
         feature_configuration = feature_configuration,
         cc_toolchain = cc_toolchain,
     )
@@ -345,10 +361,25 @@ def _swap_shared_linker_input(ctx, shared_info, new_output):
         owner = shared_info.linker_input.owner,
         libraries = depset([new_library_to_link]),
     )
+    return new_linker_input
+
+def _correct_cc_shared_library_linking(ctx, shared_info, new_output, static_root):
+    # we may have done some post-processing of the shared library
+    # replace the linker_input that has not been post-processed with the
+    # library that has been post-processed
+    new_linker_input = _create_dynamic_library_linker_input_for_file(ctx, shared_info, new_output)
+
+    # only export the static internal root, we include other libraries as roots
+    # that should be linked as alwayslink; however, if they remain as exports,
+    # they will be linked dynamically, not statically when they should be
+    static_root_label = str(static_root.label)
+    if static_root_label not in shared_info.exports:
+        fail("Expected %s in exports %s" % (static_root_label, shared_info.exports))
+    exports = [static_root_label]
 
     return CcSharedLibraryInfo(
         dynamic_deps = shared_info.dynamic_deps,
-        exports = shared_info.exports,
+        exports = exports,
         link_once_static_libs = shared_info.link_once_static_libs,
         linker_input = new_linker_input,
         preloaded_deps = shared_info.preloaded_deps,
@@ -418,7 +449,7 @@ def _cc_library_shared_proxy_impl(ctx):
             files = depset(direct = files),
             runfiles = ctx.runfiles(files = [ctx.outputs.output_file]),
         ),
-        _swap_shared_linker_input(ctx, ctx.attr.shared[0][CcSharedLibraryInfo], ctx.outputs.output_file),
+        _correct_cc_shared_library_linking(ctx, ctx.attr.shared[0][CcSharedLibraryInfo], ctx.outputs.output_file, ctx.attr.deps[0]),
         ctx.attr.table_of_contents[0][CcTocInfo],
         # The _only_ linker_input is the statically linked root itself. We need to propagate this
         # as cc_shared_library identifies which libraries can be linked dynamically based on the
