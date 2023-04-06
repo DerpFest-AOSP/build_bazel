@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 import util
+import pretty
 
 
 @dataclasses.dataclass
@@ -46,7 +47,7 @@ class PerfInfoOrEvent:
     if isinstance(self.start_time, int):
       epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
       self.start_time = epoch + datetime.timedelta(
-        microseconds=self.start_time / 1000)
+          microseconds=self.start_time / 1000)
 
 
 SOONG_PB = 'soong_metrics'
@@ -167,6 +168,21 @@ def _get_column_headers(rows: list[Row], allow_cycles: bool) -> list[str]:
     def __str__(self):
       return f'#{self.indegree}->{self.header}->{self.nexts}'
 
+    def dfs(self, target: str, visited: set[str] = None) -> list[str]:
+      if not visited:
+        visited = set()
+      if target == self.header and self.header in visited:
+        return [self.header]
+      for n in self.nexts:
+        if n in visited:
+          continue
+        visited.add(n)
+        next_col = all_cols[n]
+        path = next_col.dfs(target, visited)
+        if path:
+          return [self.header, *path]
+      return []
+
   all_cols: dict[str, Column] = {}
   for row in rows:
     prev_col = None
@@ -186,11 +202,9 @@ def _get_column_headers(rows: list[Row], allow_cycles: bool) -> list[str]:
     entry = entries[0]
     # take only one to maintain alphabetical sort
     if entry.indegree != 0:
-      s = 'event ordering has cycles'
+      cycle = '->'.join(entry.dfs(entry.header))
+      s = f'event ordering has a cycle {cycle}'
       logging.warning(s)
-      s += ":\n\t"
-      s += "\n\t".join(str(c) for c in all_cols.values())
-      logging.debug(s)
       if not allow_cycles:
         raise ValueError(s)
     acc.append(entry.header)
@@ -224,7 +238,7 @@ def tabulate_metrics_csv(log_dir: Path):
     row = get_build_info_and_perf(d)
     rows.append(row)
 
-  headers: list[str] = _get_column_headers(rows, allow_cycles=False)
+  headers: list[str] = _get_column_headers(rows, allow_cycles=True)
 
   def row2line(r):
     return ','.join([str(r.get(col) or '') for col in headers])
@@ -245,14 +259,15 @@ def display_tabulated_metrics(log_dir: Path):
   1 To view key metrics in metrics.csv:
     %s
   2 To view column headers:
-    %s'''), output, cmd_str, util.get_csv_columns_cmd(log_dir))
+    %s
+    '''), output, cmd_str, util.get_csv_columns_cmd(log_dir))
 
 
 def main():
   p = argparse.ArgumentParser(
-    formatter_class=argparse.RawTextHelpFormatter,
-    description='read archived perf metrics from [LOG_DIR] and '
-                f'summarize them into {util.METRICS_TABLE}')
+      formatter_class=argparse.RawTextHelpFormatter,
+      description='read archived perf metrics from [LOG_DIR] and '
+                  f'summarize them into {util.METRICS_TABLE}')
   default_log_dir = util.get_default_log_dir()
   p.add_argument('-l', '--log-dir', type=Path, default=default_log_dir,
                  help=textwrap.dedent('''
@@ -273,6 +288,8 @@ def main():
 
   tabulate_metrics_csv(options.log_dir)
   display_tabulated_metrics(options.log_dir)
+  pretty.summarize_metrics(options.log_dir)
+  pretty.display_summarized_metrics(options.log_dir)
 
 
 if __name__ == '__main__':
