@@ -707,7 +707,7 @@ def _cc_library_set_defines_for_stubs():
     cc_stub_suite(
         name = name + "_libfoo_stub_libs",
         soname = name + "_libfoo.so",
-        source_library = ":" + name + "_libfoo",
+        source_library_label = ":" + name + "_libfoo",
         symbol_file = name + "_libfoo.map.txt",
         versions = ["30", "40"],
     )
@@ -723,7 +723,7 @@ def _cc_library_set_defines_for_stubs():
     cc_stub_suite(
         name = name + "_libbar_stub_libs",
         soname = name + "_libbar.so",
-        source_library = ":" + name + "_libbar",
+        source_library_label = ":" + name + "_libbar",
         symbol_file = name + "_libbar.map.txt",
         versions = ["current"],
     )
@@ -739,7 +739,7 @@ def _cc_library_set_defines_for_stubs():
     cc_stub_suite(
         name = name + "_libbaz_stub_libs",
         soname = name + "_libbaz.so",
-        source_library = ":" + name + "_libbaz",
+        source_library_label = ":" + name + "_libbaz",
         symbol_file = name + "_libbaz.map.txt",
         versions = ["30"],
     )
@@ -760,9 +760,9 @@ def _cc_library_set_defines_for_stubs():
         target_under_test = name + "_lib_with_stub_deps__internal_root_cpp",
         mnemonics = ["CppCompile"],
         expected_flags = [
-            "-D__CC_LIBRARY_SET_DEFINES_FOR_STUBS_LIBFOO__API__=10000",
-            "-D__CC_LIBRARY_SET_DEFINES_FOR_STUBS_LIBBAR__API__=10000",
-            "-D__CC_LIBRARY_SET_DEFINES_FOR_STUBS_LIBBAZ__API__=30",
+            "-D__CC_LIBRARY_SET_DEFINES_FOR_STUBS_LIBFOO_API__=10000",
+            "-D__CC_LIBRARY_SET_DEFINES_FOR_STUBS_LIBBAR_API__=10000",
+            "-D__CC_LIBRARY_SET_DEFINES_FOR_STUBS_LIBBAZ_API__=30",
         ],
     )
     return test_name
